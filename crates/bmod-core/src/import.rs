@@ -22,7 +22,7 @@ pub fn load_model(path: &Path, log: Logger) -> Result<Mesh> {
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase)
         .unwrap_or_default();
-    let mesh = match ext.as_str() {
+    let mut mesh = match ext.as_str() {
         "glb" | "gltf" => load_gltf(path, log)?,
         "obj" => load_obj(path, log)?,
         other => bail!(
@@ -33,6 +33,7 @@ pub fn load_model(path: &Path, log: Logger) -> Result<Mesh> {
     if mesh.triangles.is_empty() {
         bail!("{} contains no triangles", path.display());
     }
+    mesh.prune_unused_materials();
     if !mesh.is_finite() {
         bail!("{} contains invalid (NaN/infinite) vertex data", path.display());
     }
@@ -68,6 +69,12 @@ fn load_gltf(path: &Path, log: Logger) -> Result<Mesh> {
                 ));
                 continue;
             }
+            let gmat = prim.material();
+            let material = match (gmat.name(), gmat.index()) {
+                (Some(name), _) => mesh.material_slot(name),
+                (None, Some(i)) => mesh.material_slot(&format!("material_{i}")),
+                (None, None) => mesh.material_slot("default"),
+            };
             let reader = prim.reader(|b| Some(&buffers[b.index()]));
             let Some(positions) = reader.read_positions() else { continue };
             let positions: Vec<[f32; 3]> = positions.collect();
@@ -98,7 +105,7 @@ fn load_gltf(path: &Path, log: Logger) -> Result<Mesh> {
             };
             for tri in indices.as_chunks::<3>().0 {
                 let [a, b, c] = [vertex(tri[0])?, vertex(tri[1])?, vertex(tri[2])?];
-                mesh.triangles.push(if mirrored { [a, c, b] } else { [a, b, c] });
+                mesh.push(if mirrored { [a, c, b] } else { [a, b, c] }, material);
             }
         }
     }
@@ -115,14 +122,23 @@ fn load_obj(path: &Path, log: Logger) -> Result<Mesh> {
         single_index: true,
         ..Default::default()
     };
-    // Materials (.mtl) are irrelevant here: the texture comes from the user.
-    let (models, _materials) =
+    // Only material *names* are used from the .mtl; textures come from the user.
+    // A missing .mtl is fine: slots are then named by index.
+    let (models, mtl) =
         tobj::load_obj(path, &opts).with_context(|| format!("failed to read OBJ {}", path.display()))?;
+    let mtl = mtl.unwrap_or_default();
 
     let mut mesh = Mesh::default();
     let mut missing_uvs = false;
     for model in models {
         let m = &model.mesh;
+        let material = match m.material_id {
+            Some(id) => match mtl.get(id) {
+                Some(mat) => mesh.material_slot(&mat.name),
+                None => mesh.material_slot(&format!("material_{id}")),
+            },
+            None => mesh.material_slot("default"),
+        };
         let positions: Vec<[f32; 3]> = m.positions.as_chunks::<3>().0.iter().map(|p| [p[0], p[1], p[2]]).collect();
         let normals: Vec<[f32; 3]> = if m.normals.len() == m.positions.len() {
             m.normals.as_chunks::<3>().0.iter().map(|n| [n[0], n[1], n[2]]).collect()
@@ -146,7 +162,7 @@ fn load_obj(path: &Path, log: Logger) -> Result<Mesh> {
             if tri.iter().any(|&i| i as usize >= positions.len()) {
                 bail!("OBJ index out of range in object '{}'", model.name);
             }
-            mesh.triangles.push([vertex(tri[0]), vertex(tri[1]), vertex(tri[2])]);
+            mesh.push([vertex(tri[0]), vertex(tri[1]), vertex(tri[2])], material);
         }
     }
     if missing_uvs {
@@ -177,6 +193,26 @@ mod tests {
         assert_eq!(v.uv, [0.0, 1.0]);
         // OBJ normal +Z (towards viewer) -> Source -Y.
         assert_eq!(mesh.triangles[0][0].normal, [0.0, -1.0, 0.0]);
+        assert_eq!(mesh.materials, ["default"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn obj_material_slots() {
+        let dir = std::env::temp_dir().join(format!("bmod-test-mtl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("m.mtl"), "newmtl Body\nKd 1 1 1\nnewmtl Money.001\nKd 0 1 0\nnewmtl Unused\n").unwrap();
+        let path = dir.join("m.obj");
+        std::fs::write(
+            &path,
+            "mtllib m.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\n\
+             o a\nusemtl Body\nf 1 2 3\nf 2 4 3\n\
+             o b\nusemtl Money.001\nf 1 3 4\n",
+        )
+        .unwrap();
+        let mesh = load_model(&path, &|_| {}).unwrap();
+        assert_eq!(mesh.materials, ["body", "money_001"]);
+        assert_eq!(mesh.material_triangle_counts(), [2, 1]);
         std::fs::remove_dir_all(dir).ok();
     }
 }

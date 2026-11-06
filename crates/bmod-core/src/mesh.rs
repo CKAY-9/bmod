@@ -11,9 +11,59 @@ pub struct Vertex {
 #[derive(Clone, Debug, Default)]
 pub struct Mesh {
     pub triangles: Vec<[Vertex; 3]>,
+    /// Material slot of each triangle; indexes `materials`. Same length as `triangles`.
+    pub tri_material: Vec<u32>,
+    /// Material slot names, already sanitized (`[a-z0-9_]`) and unique.
+    pub materials: Vec<String>,
 }
 
 impl Mesh {
+    /// Returns the slot for a material name from the source file, creating it if new.
+    pub fn material_slot(&mut self, raw_name: &str) -> u32 {
+        let name = match crate::sanitize_name(raw_name) {
+            n if n.is_empty() => "material".to_string(),
+            n => n,
+        };
+        match self.materials.iter().position(|m| *m == name) {
+            Some(i) => i as u32,
+            None => {
+                self.materials.push(name);
+                (self.materials.len() - 1) as u32
+            }
+        }
+    }
+
+    pub fn push(&mut self, tri: [Vertex; 3], material: u32) {
+        self.triangles.push(tri);
+        self.tri_material.push(material);
+    }
+
+    /// Triangle count per material slot.
+    pub fn material_triangle_counts(&self) -> Vec<usize> {
+        let mut counts = vec![0; self.materials.len()];
+        for &m in &self.tri_material {
+            counts[m as usize] += 1;
+        }
+        counts
+    }
+
+    /// Drops material slots that no triangle uses and renumbers the rest.
+    pub fn prune_unused_materials(&mut self) {
+        let counts = self.material_triangle_counts();
+        let mut remap = vec![0u32; counts.len()];
+        let mut kept = Vec::new();
+        for (i, name) in std::mem::take(&mut self.materials).into_iter().enumerate() {
+            if counts[i] > 0 {
+                remap[i] = kept.len() as u32;
+                kept.push(name);
+            }
+        }
+        self.materials = kept;
+        for m in &mut self.tri_material {
+            *m = remap[*m as usize];
+        }
+    }
+
     pub fn scale(&mut self, factor: f32) {
         for tri in &mut self.triangles {
             for v in tri {

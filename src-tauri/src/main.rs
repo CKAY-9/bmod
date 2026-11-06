@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use bmod_core::compiler::{Runner, Studiomdl};
-use bmod_core::{AlphaMode, ConvertOptions};
+use bmod_core::{AlphaMode, ConvertOptions, MaterialOptions, Scroll};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_opener::OpenerExt;
@@ -24,15 +24,41 @@ struct Environment {
 }
 
 #[derive(Deserialize)]
+struct ScrollRequest {
+    rate: f32,
+    angle: f32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MaterialRequest {
+    slot: String,
+    texture: PathBuf,
+    alpha: String,
+    double_sided: bool,
+    scroll: Option<ScrollRequest>,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ConvertRequest {
     model: PathBuf,
-    texture: PathBuf,
+    materials: Vec<MaterialRequest>,
     name: String,
     scale: f32,
     surfaceprop: String,
-    alpha: String,
-    double_sided: bool,
+}
+
+#[derive(Serialize)]
+struct MaterialSlotInfo {
+    name: String,
+    triangles: usize,
+}
+
+#[derive(Serialize)]
+struct ModelInfo {
+    materials: Vec<MaterialSlotInfo>,
+    triangles: usize,
 }
 
 #[derive(Serialize)]
@@ -76,19 +102,48 @@ fn environment() -> Environment {
 }
 
 #[tauri::command]
+async fn inspect_model(app: AppHandle, path: PathBuf) -> Result<ModelInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let log = |line: &str| {
+            let _ = app.emit(LOG_EVENT, line);
+        };
+        bmod_core::inspect_model(&path, &log)
+            .map(|info| ModelInfo {
+                triangles: info.triangles,
+                materials: info
+                    .materials
+                    .into_iter()
+                    .map(|m| MaterialSlotInfo { name: m.name, triangles: m.triangles })
+                    .collect(),
+            })
+            .map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("model loading crashed: {e}"))?
+}
+
+#[tauri::command]
 async fn convert(app: AppHandle, req: ConvertRequest) -> Result<ConvertResult, String> {
     let opts = ConvertOptions {
         model: req.model,
-        texture: req.texture,
+        materials: req
+            .materials
+            .into_iter()
+            .map(|m| MaterialOptions {
+                slot: m.slot,
+                texture: m.texture,
+                alpha: match m.alpha.as_str() {
+                    "cutout" => AlphaMode::Cutout,
+                    "translucent" => AlphaMode::Translucent,
+                    _ => AlphaMode::Opaque,
+                },
+                double_sided: m.double_sided,
+                scroll: m.scroll.map(|s| Scroll { rate: s.rate, angle: s.angle }),
+            })
+            .collect(),
         name: req.name,
         scale: req.scale,
         surfaceprop: req.surfaceprop,
-        alpha: match req.alpha.as_str() {
-            "cutout" => AlphaMode::Cutout,
-            "translucent" => AlphaMode::Translucent,
-            _ => AlphaMode::Opaque,
-        },
-        double_sided: req.double_sided,
         output_root: output_root(),
     };
     tauri::async_runtime::spawn_blocking(move || {
@@ -112,7 +167,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![environment, convert, open_folder])
+        .invoke_handler(tauri::generate_handler![environment, inspect_model, convert, open_folder])
         .run(tauri::generate_context!())
         .expect("error while running BMod");
 }

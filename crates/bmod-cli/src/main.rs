@@ -1,36 +1,110 @@
 //! Headless front-end for the BMod pipeline (handy for testing and scripting).
-//!
-//! Usage: bmod-cli <model> <texture> [name] [scale]
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use bmod_core::{AlphaMode, ConvertOptions, convert, convert::DEFAULT_SCALE};
+use bmod_core::convert::DEFAULT_SCALE;
+use bmod_core::{AlphaMode, ConvertOptions, MaterialOptions, Scroll, convert, inspect_model};
+
+const USAGE: &str = "\
+usage: bmod-cli <model> [texture] [options]
+
+  texture                 default texture for every material slot
+  --tex <slot>=<path>     texture for one slot (overrides the default)
+  --scroll <slot>=<rate>[:<angle>]
+                          scroll a slot's texture (rate in widths/sec, angle in degrees)
+  --name <name>           asset name (default: model file name)
+  --scale <n>             units per model unit (default: 39.37)
+  --list                  print the model's material slots and exit";
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let [model, texture, rest @ ..] = args.as_slice() else {
-        eprintln!("usage: bmod-cli <model.glb|gltf|obj> <texture.png|jpg|tga> [name] [scale]");
-        return ExitCode::from(2);
-    };
-    let opts = ConvertOptions {
-        model: PathBuf::from(model),
-        texture: PathBuf::from(texture),
-        name: rest.first().cloned().unwrap_or_default(),
-        scale: rest.get(1).and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_SCALE),
-        surfaceprop: "default".into(),
-        alpha: AlphaMode::Opaque,
-        double_sided: false,
-        output_root: std::env::current_dir().expect("no working directory"),
-    };
-    match convert(&opts, &|line| println!("{line}")) {
-        Ok(out) => {
-            println!("output: {}", out.dir.display());
-            ExitCode::SUCCESS
-        }
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e:#}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn split_kv(v: &str) -> anyhow::Result<(&str, &str)> {
+    v.split_once('=').ok_or_else(|| anyhow::anyhow!("expected <slot>=<value>, got '{v}'"))
+}
+
+fn run() -> anyhow::Result<()> {
+    let mut positional = Vec::new();
+    let mut textures: Vec<(String, PathBuf)> = Vec::new();
+    let mut scrolls: Vec<(String, Scroll)> = Vec::new();
+    let mut name = String::new();
+    let mut scale = DEFAULT_SCALE;
+    let mut list = false;
+
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        let mut value = || args.next().ok_or_else(|| anyhow::anyhow!("{arg} needs a value\n\n{USAGE}"));
+        match arg.as_str() {
+            "--tex" => {
+                let v = value()?;
+                let (slot, path) = split_kv(&v)?;
+                textures.push((slot.to_string(), path.into()));
+            }
+            "--scroll" => {
+                let v = value()?;
+                let (slot, spec) = split_kv(&v)?;
+                let (rate, angle) = spec.split_once(':').unwrap_or((spec, "0"));
+                scrolls.push((slot.to_string(), Scroll { rate: rate.parse()?, angle: angle.parse()? }));
+            }
+            "--name" => name = value()?,
+            "--scale" => scale = value()?.parse()?,
+            "--list" => list = true,
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                return Ok(());
+            }
+            _ => positional.push(arg),
+        }
+    }
+    let [model, rest @ ..] = positional.as_slice() else { anyhow::bail!("{USAGE}") };
+    let model = PathBuf::from(model);
+    let default_texture = rest.first().map(PathBuf::from);
+
+    let info = inspect_model(&model, &|line| println!("{line}"))?;
+    if list {
+        for m in &info.materials {
+            println!("{}\t{} triangles", m.name, m.triangles);
+        }
+        return Ok(());
+    }
+
+    let materials = info
+        .materials
+        .iter()
+        .map(|slot| {
+            let texture = textures
+                .iter()
+                .find(|(s, _)| *s == slot.name)
+                .map(|(_, p)| p.clone())
+                .or_else(|| default_texture.clone())
+                .ok_or_else(|| anyhow::anyhow!("no texture for material '{}' (use --tex)", slot.name))?;
+            Ok(MaterialOptions {
+                slot: slot.name.clone(),
+                texture,
+                alpha: AlphaMode::Opaque,
+                double_sided: false,
+                scroll: scrolls.iter().find(|(s, _)| *s == slot.name).map(|(_, sc)| *sc),
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    let opts = ConvertOptions {
+        model,
+        materials,
+        name,
+        scale,
+        surfaceprop: "default".into(),
+        output_root: std::env::current_dir()?,
+    };
+    let out = convert(&opts, &|line| println!("{line}"))?;
+    println!("output: {}", out.dir.display());
+    Ok(())
 }

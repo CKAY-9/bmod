@@ -68,7 +68,49 @@ h1 { margin: 0; font-size: 22px; letter-spacing: 0.5px; }
 
 main { display: grid; gap: 16px; max-width: 900px; margin: 0 auto; }
 
-.inputs { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.panel {
+  padding: 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); font-weight: 600; }
+#materials { display: grid; gap: 10px; }
+
+.slot {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 2px dashed var(--border);
+  border-radius: 8px;
+  transition: border-color 0.15s, background 0.15s;
+}
+.slot.filled { border-style: solid; }
+.slot.drop-target { border-color: var(--accent); background: var(--drop); }
+.slot-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.slot-name { font-family: var(--mono); font-size: 14px; }
+.slot-tris { font-size: 12px; }
+.tex-pick {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.tex-pick:hover, .tex-pick:focus-visible { border-color: var(--accent); outline: none; }
+.slot:not(.filled) .tex-file { color: var(--accent); }
+.tex-file { font-weight: 600; overflow-wrap: anywhere; }
+.tex-path { font-size: 11px; overflow-wrap: anywhere; }
+.tex-path:empty { display: none; }
+.slot-opts { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: end; }
+.slot-opts .field { min-width: 120px; flex: 0 1 170px; }
+.slot-opts .scroll-field { flex-basis: 110px; min-width: 90px; }
+.slot-opts .check { padding-bottom: 7px; }
 
 .file-card {
   display: grid;
@@ -85,7 +127,7 @@ main { display: grid; gap: 16px; max-width: 900px; margin: 0 auto; }
   transition: border-color 0.15s, background 0.15s;
 }
 .file-card:hover, .file-card:focus-visible { border-color: var(--accent); outline: none; }
-.file-card.dragging { background: var(--drop); border-color: var(--accent); }
+body.dragging .file-card { background: var(--drop); border-color: var(--accent); }
 .file-card.filled { border-style: solid; }
 .file-card .label { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
 .file-card .file { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }

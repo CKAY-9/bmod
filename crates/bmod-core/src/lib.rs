@@ -13,7 +13,9 @@ pub mod smd;
 pub mod vmt;
 pub mod vtf;
 
-pub use convert::{AlphaMode, ConvertOptions, ConvertOutput, convert};
+pub use convert::{
+    AlphaMode, ConvertOptions, ConvertOutput, MaterialOptions, ModelInfo, Scroll, convert, inspect_model,
+};
 
 /// Receives human-readable progress lines during a conversion.
 pub type Logger<'a> = &'a (dyn Fn(&str) + Sync);

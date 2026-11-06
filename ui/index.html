@@ -10,26 +10,25 @@
   <header>
     <div class="brand">
       <h1>BMod</h1>
-      <p>Model + texture → Garry's Mod static prop</p>
+      <p>Model + textures → Garry's Mod static prop</p>
     </div>
     <div id="env" class="env pending" title="">Checking toolchain…</div>
   </header>
 
   <main>
-    <section class="inputs">
-      <button type="button" class="file-card" id="model-card" data-kind="model">
-        <span class="label">Model</span>
-        <span class="file" id="model-file">Drop or browse</span>
-        <span class="hint" id="model-hint">.glb · .gltf · .obj</span>
-      </button>
-      <button type="button" class="file-card" id="texture-card" data-kind="texture">
-        <span class="label">Texture</span>
-        <span class="file" id="texture-file">Drop or browse</span>
-        <span class="hint" id="texture-hint">.png · .jpg · .tga</span>
-      </button>
+    <button type="button" class="file-card" id="model-card">
+      <span class="label">Model</span>
+      <span class="file" id="model-file">Drop or browse</span>
+      <span class="hint" id="model-hint">.glb · .gltf · .obj</span>
+    </button>
+
+    <section class="panel">
+      <h2>Materials</h2>
+      <p id="materials-empty" class="muted">Load a model to see its material slots. Each slot gets its own texture.</p>
+      <div id="materials"></div>
     </section>
 
-    <section class="options">
+    <section class="panel options">
       <label class="field wide">
         <span>Name</span>
         <input id="name" type="text" placeholder="from model file name" spellcheck="false" autocomplete="off">
@@ -59,18 +58,6 @@
           <option value="flesh">Flesh</option>
         </select>
       </label>
-      <label class="field">
-        <span>Transparency</span>
-        <select id="alpha">
-          <option value="opaque">None</option>
-          <option value="cutout">Cutout (alpha test)</option>
-          <option value="translucent">Translucent</option>
-        </select>
-      </label>
-      <label class="check">
-        <input id="double-sided" type="checkbox">
-        <span>Double-sided</span>
-      </label>
     </section>
 
     <section class="actions">
@@ -91,6 +78,39 @@
       <pre id="log"></pre>
     </details>
   </main>
+
+  <template id="slot-template">
+    <div class="slot">
+      <div class="slot-head">
+        <strong class="slot-name"></strong>
+        <span class="muted slot-tris"></span>
+      </div>
+      <button type="button" class="tex-pick">
+        <span class="tex-file">Choose texture…</span>
+        <span class="tex-path muted"></span>
+      </button>
+      <div class="slot-opts">
+        <label class="field">
+          <span>Transparency</span>
+          <select class="alpha">
+            <option value="opaque">None</option>
+            <option value="cutout">Cutout (alpha test)</option>
+            <option value="translucent">Translucent</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" class="double-sided"><span>Double-sided</span></label>
+        <label class="check"><input type="checkbox" class="scroll-on"><span>Scroll</span></label>
+        <label class="field scroll-field">
+          <span>Speed <small>(per sec)</small></span>
+          <input type="number" class="scroll-rate" step="0.05" value="0.5">
+        </label>
+        <label class="field scroll-field">
+          <span>Angle <small>(°, 90 = vertical)</small></span>
+          <input type="number" class="scroll-angle" step="15" value="90">
+        </label>
+      </div>
+    </div>
+  </template>
 
   <script src="main.js"></script>
 </body>

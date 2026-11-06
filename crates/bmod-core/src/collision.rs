@@ -78,7 +78,10 @@ mod tests {
 
     #[test]
     fn flat_mesh_falls_back_to_box() {
-        let mesh = Mesh { triangles: vec![tri([0.0; 3], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0])] };
+        let mesh = Mesh {
+            triangles: vec![tri([0.0; 3], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0])],
+            ..Default::default()
+        };
         let hull = convex_hull(&mesh);
         assert_eq!(hull.len(), 12);
         let zs: Vec<f32> = hull.iter().flatten().map(|p| p[2]).collect();
@@ -92,6 +95,7 @@ mod tests {
                 tri([0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
                 tri([0.0; 3], [0.0, 0.0, 1.0], [1.0, 1.0, 1.0]),
             ],
+            ..Default::default()
         };
         let hull = convex_hull(&mesh);
         let centroid = glam::Vec3::splat(0.4);
