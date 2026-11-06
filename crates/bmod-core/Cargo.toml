@@ -1,0 +1,16 @@
+[package]
+name = "bmod-core"
+version = "0.1.0"
+edition = "2024"
+description = "Conversion pipeline for BMod: modern model + texture -> Source/GMod static prop"
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = "0.4.45"
+directories = "6.0.0"
+glam = "0.34.2"
+gltf = { version = "1.4.1", features = ["import"] }
+image = "0.25.10"
+parry3d = "0.31.1"
+texpresso = "2.0.2"
+tobj = "4.0.5"

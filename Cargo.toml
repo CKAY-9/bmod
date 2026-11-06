@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["crates/bmod-core", "crates/bmod-cli", "src-tauri"]
+
+[profile.dev.package."*"]
+opt-level = 2

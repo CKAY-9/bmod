@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BMod</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>BMod</h1>
+      <p>Model + texture → Garry's Mod static prop</p>
+    </div>
+    <div id="env" class="env pending" title="">Checking toolchain…</div>
+  </header>
+
+  <main>
+    <section class="inputs">
+      <button type="button" class="file-card" id="model-card" data-kind="model">
+        <span class="label">Model</span>
+        <span class="file" id="model-file">Drop or browse</span>
+        <span class="hint" id="model-hint">.glb · .gltf · .obj</span>
+      </button>
+      <button type="button" class="file-card" id="texture-card" data-kind="texture">
+        <span class="label">Texture</span>
+        <span class="file" id="texture-file">Drop or browse</span>
+        <span class="hint" id="texture-hint">.png · .jpg · .tga</span>
+      </button>
+    </section>
+
+    <section class="options">
+      <label class="field wide">
+        <span>Name</span>
+        <input id="name" type="text" placeholder="from model file name" spellcheck="false" autocomplete="off">
+      </label>
+      <label class="field">
+        <span>Scale <small>(units per metre)</small></span>
+        <input id="scale" type="number" min="0.001" step="any" value="39.37">
+      </label>
+      <label class="field">
+        <span>Surface</span>
+        <select id="surfaceprop">
+          <option value="default">Default</option>
+          <option value="wood">Wood</option>
+          <option value="wood_crate">Wood crate</option>
+          <option value="wood_furniture">Wood furniture</option>
+          <option value="metal">Metal</option>
+          <option value="metal_box">Metal box</option>
+          <option value="metalpanel">Metal panel</option>
+          <option value="plastic">Plastic</option>
+          <option value="concrete">Concrete</option>
+          <option value="rock">Rock</option>
+          <option value="glass">Glass</option>
+          <option value="rubber">Rubber</option>
+          <option value="cardboard">Cardboard</option>
+          <option value="paper">Paper</option>
+          <option value="carpet">Fabric / carpet</option>
+          <option value="flesh">Flesh</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Transparency</span>
+        <select id="alpha">
+          <option value="opaque">None</option>
+          <option value="cutout">Cutout (alpha test)</option>
+          <option value="translucent">Translucent</option>
+        </select>
+      </label>
+      <label class="check">
+        <input id="double-sided" type="checkbox">
+        <span>Double-sided</span>
+      </label>
+    </section>
+
+    <section class="actions">
+      <button type="button" id="convert" class="primary" disabled>Convert</button>
+      <span id="output-hint" class="muted"></span>
+    </section>
+
+    <section id="result" class="result" hidden>
+      <div>
+        <strong id="result-title"></strong>
+        <code id="result-detail"></code>
+      </div>
+      <button type="button" id="open-folder">Open folder</button>
+    </section>
+
+    <details class="log" id="log-box">
+      <summary>Log</summary>
+      <pre id="log"></pre>
+    </details>
+  </main>
+
+  <script src="main.js"></script>
+</body>
+</html>

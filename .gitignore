@@ -1,0 +1,3 @@
+/target
+src-tauri/gen/
+bmod_*_[0-9]*/
