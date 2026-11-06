@@ -1,3 +1,7 @@
+<div align="center">
+<img src="./src-tauri/icons/icon.png" width=250 height=250 />
+</div>
+
 # BMod
 
 Blender-to-Garry's Mod, or BMod, is a simple GUI app for converting modern model files and an unwrapped texture into a Garry's Mod static prop: `.mdl` plus `.vtf`/`.vmt`.
