@@ -3,7 +3,9 @@
 //! studiomdl ships only with the Windows build of Garry's Mod, so on Linux
 //! and macOS it runs under Wine in a BMod-owned prefix.
 //!
-//! Overrides: `BMOD_STUDIOMDL` (path to studiomdl.exe), `BMOD_WINE` (wine binary).
+//! Overrides, in order of precedence: explicit [`ToolPaths`] (the app's
+//! settings), then `BMOD_STUDIOMDL` (path to studiomdl.exe) and `BMOD_WINE`
+//! (wine binary), then auto-detection.
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -19,6 +21,13 @@ pub enum Runner {
     Wine { wine: PathBuf, prefix: PathBuf },
 }
 
+/// User-chosen tool locations; `None` means "auto-detect".
+#[derive(Clone, Debug, Default)]
+pub struct ToolPaths {
+    pub studiomdl: Option<PathBuf>,
+    pub wine: Option<PathBuf>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Studiomdl {
     pub exe: PathBuf,
@@ -28,17 +37,30 @@ pub struct Studiomdl {
 impl Studiomdl {
     /// Finds studiomdl and, off Windows, Wine. Errors explain how to fix the setup.
     pub fn locate() -> Result<Self> {
-        let exe = find_studiomdl().context(
-            "could not find studiomdl.exe. Install Garry's Mod through Steam (on Linux, force the \
-             Windows build with Properties > Compatibility > Proton), or set BMOD_STUDIOMDL to its path",
-        )?;
+        Self::locate_with(&ToolPaths::default())
+    }
+
+    /// Like [`locate`](Self::locate), but explicit `paths` take precedence.
+    pub fn locate_with(paths: &ToolPaths) -> Result<Self> {
+        let exe = match &paths.studiomdl {
+            Some(p) if p.is_file() => p.clone(),
+            Some(p) => bail!("studiomdl.exe not found at {} (check BMod's settings)", p.display()),
+            None => find_studiomdl().context(
+                "could not find studiomdl.exe. Install Garry's Mod through Steam (on Linux, force the \
+                 Windows build with Properties > Compatibility > Proton), or set its path in BMod's settings",
+            )?,
+        };
         let runner = if cfg!(windows) {
             Runner::Native
         } else {
-            let wine = std::env::var_os("BMOD_WINE")
-                .map(PathBuf::from)
-                .or_else(|| find_in_path("wine"))
-                .context("Wine is required to run studiomdl on this platform but `wine` was not found in PATH (or set BMOD_WINE)")?;
+            let wine = match &paths.wine {
+                Some(p) if p.is_file() => p.clone(),
+                Some(p) => bail!("Wine not found at {} (check BMod's settings)", p.display()),
+                None => std::env::var_os("BMOD_WINE")
+                    .map(PathBuf::from)
+                    .or_else(|| find_in_path("wine"))
+                    .context("Wine is required to run studiomdl on this platform but `wine` was not found in PATH (set its path in BMod's settings)")?,
+            };
             let prefix = directories::ProjectDirs::from("", "", "bmod")
                 .map(|d| d.data_dir().join("wineprefix"))
                 .context("could not determine a data directory for the Wine prefix")?;

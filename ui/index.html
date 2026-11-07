@@ -15,7 +15,15 @@
       </section>
       <p>Model + textures → Garry's Mod static prop</p>
     </div>
-    <div id="env" class="env pending" title="">Checking toolchain…</div>
+    <div class="header-actions">
+      <div id="env" class="env pending" title="">Checking toolchain…</div>
+      <button type="button" id="settings-open" class="icon-button" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+    </div>
   </header>
 
   <main>
@@ -88,6 +96,75 @@
       <pre id="log"></pre>
     </details>
   </main>
+
+  <dialog id="settings" aria-labelledby="settings-title">
+    <form id="settings-form" method="dialog">
+      <h2 id="settings-title">Settings</h2>
+
+      <fieldset>
+        <legend>Export</legend>
+        <div class="field">
+          <span>Export folder</span>
+          <div class="path-row">
+            <input id="set-output-dir" type="text" spellcheck="false" autocomplete="off">
+            <button type="button" class="secondary" data-browse="set-output-dir" data-kind="folder">Browse…</button>
+          </div>
+          <small class="muted">Each conversion creates a <code>bmod_&lt;name&gt;_&lt;time&gt;</code> folder here. Leave empty for the default.</small>
+        </div>
+        <label class="field">
+          <span>Model folder</span>
+          <input id="set-model-dir" type="text" spellcheck="false" autocomplete="off" placeholder="bmod">
+          <small class="muted" id="set-model-preview"></small>
+        </label>
+        <label class="check"><input type="checkbox" id="set-keep-sources"><span>Keep source files (<code>src/</code> with the .qc and .smd files)</span></label>
+        <label class="check"><input type="checkbox" id="set-open-after"><span>Open the export folder after converting</span></label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Defaults for new conversions</legend>
+        <div class="settings-grid">
+          <label class="field">
+            <span>Scale <small>(units per metre)</small></span>
+            <input id="set-default-scale" type="number" min="0.001" step="any">
+          </label>
+          <label class="field">
+            <span>Collision</span>
+            <select id="set-default-collision">
+              <option value="convex">Convex (fills holes)</option>
+              <option value="concave">Concave (keeps holes)</option>
+            </select>
+          </label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Tools</legend>
+        <div class="field">
+          <span>studiomdl.exe</span>
+          <div class="path-row">
+            <input id="set-studiomdl" type="text" spellcheck="false" autocomplete="off" placeholder="Find automatically in Garry's Mod">
+            <button type="button" class="secondary" data-browse="set-studiomdl" data-kind="exe">Browse…</button>
+          </div>
+        </div>
+        <div class="field" id="set-wine-field">
+          <span>Wine</span>
+          <div class="path-row">
+            <input id="set-wine" type="text" spellcheck="false" autocomplete="off" placeholder="Find automatically in PATH">
+            <button type="button" class="secondary" data-browse="set-wine" data-kind="file">Browse…</button>
+          </div>
+        </div>
+      </fieldset>
+
+      <p id="settings-error" class="settings-error" role="alert" hidden></p>
+
+      <footer class="settings-actions">
+        <button type="button" class="secondary" id="settings-reset">Reset to defaults</button>
+        <span class="spacer"></span>
+        <button type="button" class="secondary" id="settings-cancel">Cancel</button>
+        <button type="submit" class="primary" id="settings-save">Save</button>
+      </footer>
+    </form>
+  </dialog>
 
   <template id="slot-template">
     <div class="slot">

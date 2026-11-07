@@ -13,6 +13,7 @@ pub mod smd;
 pub mod vmt;
 pub mod vtf;
 
+pub use compiler::ToolPaths;
 pub use convert::{
     AlphaMode, CollisionMode, ConvertOptions, ConvertOutput, MaterialOptions, ModelInfo, Scroll, convert, inspect_model,
 };

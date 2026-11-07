@@ -16,6 +16,9 @@ usage: bmod-cli <model> [texture] [options]
   --name <name>           asset name (default: model file name)
   --scale <n>             units per model unit (default: 39.37)
   --concave               concave collision that keeps holes open (cups, boxes)
+  --model-dir <dir>       folder under models/ (default: bmod)
+  --out <dir>             where to create the output folder (default: current directory)
+  --no-sources            delete the generated src/ (.qc, .smd) after compiling
   --list                  print the model's material slots and exit";
 
 fn main() -> ExitCode {
@@ -40,6 +43,9 @@ fn run() -> anyhow::Result<()> {
     let mut scale = DEFAULT_SCALE;
     let mut list = false;
     let mut collision = CollisionMode::Convex;
+    let mut model_dir = String::new();
+    let mut output_root = std::env::current_dir()?;
+    let mut keep_sources = true;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -60,6 +66,9 @@ fn run() -> anyhow::Result<()> {
             "--scale" => scale = value()?.parse()?,
             "--list" => list = true,
             "--concave" => collision = CollisionMode::Concave,
+            "--model-dir" => model_dir = value()?,
+            "--out" => output_root = value()?.into(),
+            "--no-sources" => keep_sources = false,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
@@ -106,7 +115,10 @@ fn run() -> anyhow::Result<()> {
         scale,
         surfaceprop: "default".into(),
         collision,
-        output_root: std::env::current_dir()?,
+        model_dir,
+        keep_sources,
+        tools: Default::default(),
+        output_root,
     };
     let out = convert(&opts, &|line| println!("{line}"))?;
     println!("output: {}", out.dir.display());

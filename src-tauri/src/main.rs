@@ -1,15 +1,108 @@
 // Prevents an extra console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use bmod_core::compiler::{Runner, Studiomdl};
-use bmod_core::{AlphaMode, CollisionMode, ConvertOptions, MaterialOptions, Scroll};
+use bmod_core::{AlphaMode, CollisionMode, ConvertOptions, MaterialOptions, Scroll, ToolPaths};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
 const LOG_EVENT: &str = "bmod-log";
+const SETTINGS_FILE: &str = "settings.json";
+
+/// Global, persisted app settings. Empty strings mean "use the default".
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct Settings {
+    output_dir: String,
+    model_dir: String,
+    keep_sources: bool,
+    open_after_convert: bool,
+    default_scale: f32,
+    default_collision: String,
+    studiomdl_path: String,
+    wine_path: String,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            output_dir: String::new(),
+            model_dir: bmod_core::convert::DEFAULT_MODEL_DIR.into(),
+            keep_sources: true,
+            open_after_convert: false,
+            default_scale: bmod_core::convert::DEFAULT_SCALE,
+            default_collision: "convex".into(),
+            studiomdl_path: String::new(),
+            wine_path: String::new(),
+        }
+    }
+}
+
+impl Settings {
+    fn output_root(&self) -> PathBuf {
+        match self.output_dir.as_str() {
+            "" => default_output_root(),
+            dir => PathBuf::from(dir),
+        }
+    }
+
+    fn tools(&self) -> ToolPaths {
+        let path = |s: &str| (!s.is_empty()).then(|| PathBuf::from(s));
+        ToolPaths { studiomdl: path(&self.studiomdl_path), wine: path(&self.wine_path) }
+    }
+
+    /// Trims and checks user input, returning a message for the first problem.
+    fn normalized(mut self) -> Result<Self, String> {
+        for s in [&mut self.output_dir, &mut self.studiomdl_path, &mut self.wine_path] {
+            *s = s.trim().to_string();
+        }
+        self.model_dir = match bmod_core::sanitize_name(&self.model_dir) {
+            d if d.is_empty() => bmod_core::convert::DEFAULT_MODEL_DIR.into(),
+            d => d,
+        };
+        if !self.output_dir.is_empty() && !Path::new(&self.output_dir).is_absolute() {
+            return Err("the export folder must be a full path".into());
+        }
+        if !(self.default_scale.is_finite() && self.default_scale > 0.0) {
+            return Err("the default scale must be a positive number".into());
+        }
+        if !matches!(self.default_collision.as_str(), "convex" | "concave") {
+            self.default_collision = "convex".into();
+        }
+        for (label, path) in [("studiomdl.exe", &self.studiomdl_path), ("Wine", &self.wine_path)] {
+            if !path.is_empty() && !Path::new(path).is_file() {
+                return Err(format!("{label} was not found at {path}"));
+            }
+        }
+        Ok(self)
+    }
+}
+
+struct AppState {
+    settings: Mutex<Settings>,
+}
+
+impl AppState {
+    fn settings(&self) -> Settings {
+        self.settings.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+fn settings_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_config_dir().ok().map(|d| d.join(SETTINGS_FILE))
+}
+
+/// Saved settings, or defaults if there are none or the file is unreadable.
+fn load_settings(app: &AppHandle) -> Settings {
+    settings_path(app)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default()
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,6 +111,8 @@ struct Environment {
     wine: Option<String>,
     problem: Option<String>,
     output_root: String,
+    default_output_root: String,
+    is_windows: bool,
     model_extensions: &'static [&'static str],
     texture_extensions: &'static [&'static str],
     default_scale: f32,
@@ -72,7 +167,7 @@ struct ConvertResult {
 
 /// The working directory, unless it is the filesystem root (as when launched
 /// from a desktop menu), in which case the home directory is used instead.
-fn output_root() -> PathBuf {
+fn default_output_root() -> PathBuf {
     std::env::current_dir()
         .ok()
         .filter(|p| p.parent().is_some())
@@ -81,8 +176,9 @@ fn output_root() -> PathBuf {
 }
 
 #[tauri::command]
-fn environment() -> Environment {
-    let (studiomdl, wine, problem) = match Studiomdl::locate() {
+fn environment(state: State<AppState>) -> Environment {
+    let settings = state.settings();
+    let (studiomdl, wine, problem) = match Studiomdl::locate_with(&settings.tools()) {
         Ok(s) => {
             let wine = match &s.runner {
                 Runner::Wine { wine, .. } => Some(wine.display().to_string()),
@@ -96,7 +192,9 @@ fn environment() -> Environment {
         studiomdl,
         wine,
         problem,
-        output_root: output_root().display().to_string(),
+        output_root: settings.output_root().display().to_string(),
+        default_output_root: default_output_root().display().to_string(),
+        is_windows: cfg!(windows),
         model_extensions: bmod_core::MODEL_EXTENSIONS,
         texture_extensions: bmod_core::TEXTURE_EXTENSIONS,
         default_scale: bmod_core::convert::DEFAULT_SCALE,
@@ -125,7 +223,27 @@ async fn inspect_model(app: AppHandle, path: PathBuf) -> Result<ModelInfo, Strin
 }
 
 #[tauri::command]
-async fn convert(app: AppHandle, req: ConvertRequest) -> Result<ConvertResult, String> {
+fn get_settings(state: State<AppState>) -> Settings {
+    state.settings()
+}
+
+/// Validates, persists and applies new settings; returns them as stored.
+#[tauri::command]
+fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> Result<Settings, String> {
+    let settings = settings.normalized()?;
+    let path = settings_path(&app).ok_or("could not determine a config directory")?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
+    }
+    let json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+    *state.settings.lock().unwrap_or_else(|e| e.into_inner()) = settings.clone();
+    Ok(settings)
+}
+
+#[tauri::command]
+async fn convert(app: AppHandle, state: State<'_, AppState>, req: ConvertRequest) -> Result<ConvertResult, String> {
+    let settings = state.settings();
     let opts = ConvertOptions {
         model: req.model,
         materials: req
@@ -147,7 +265,10 @@ async fn convert(app: AppHandle, req: ConvertRequest) -> Result<ConvertResult, S
         scale: req.scale,
         surfaceprop: req.surfaceprop,
         collision: if req.concave { CollisionMode::Concave } else { CollisionMode::Convex },
-        output_root: output_root(),
+        output_root: settings.output_root(),
+        model_dir: settings.model_dir.clone(),
+        keep_sources: settings.keep_sources,
+        tools: settings.tools(),
     };
     tauri::async_runtime::spawn_blocking(move || {
         let log = |line: &str| {
@@ -170,7 +291,56 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![environment, inspect_model, convert, open_folder])
+        .setup(|app| {
+            let settings = load_settings(app.handle());
+            app.manage(AppState { settings: Mutex::new(settings) });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            environment,
+            inspect_model,
+            convert,
+            open_folder,
+            get_settings,
+            save_settings
+        ])
         .run(tauri::generate_context!())
         .expect("error while running BMod");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_settings() {
+        let s = Settings {
+            output_dir: "  ".into(),
+            model_dir: " My Props! ".into(),
+            default_collision: "bogus".into(),
+            ..Default::default()
+        }
+        .normalized()
+        .unwrap();
+        assert_eq!(s.output_dir, "");
+        assert_eq!(s.model_dir, "my_props");
+        assert_eq!(s.default_collision, "convex");
+        assert_eq!(Settings { model_dir: "!!".into(), ..Default::default() }.normalized().unwrap().model_dir, "bmod");
+    }
+
+    #[test]
+    fn rejects_bad_settings() {
+        let bad = |s: Settings| s.normalized().unwrap_err();
+        assert!(bad(Settings { output_dir: "relative/dir".into(), ..Default::default() }).contains("full path"));
+        assert!(bad(Settings { default_scale: 0.0, ..Default::default() }).contains("scale"));
+        assert!(bad(Settings { studiomdl_path: "/no/such/studiomdl.exe".into(), ..Default::default() }).contains("not found"));
+    }
+
+    #[test]
+    fn missing_fields_use_defaults() {
+        let s: Settings = serde_json::from_str(r#"{"outputDir": "/x"}"#).unwrap();
+        assert_eq!(s.output_dir, "/x");
+        assert!(s.keep_sources);
+        assert_eq!(s.model_dir, "bmod");
+    }
 }

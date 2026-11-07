@@ -7,6 +7,10 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   env: null,
+  /** Global settings as stored by the backend (see `Settings` in src-tauri). */
+  settings: null,
+  /** Whether the result box currently shows a toolchain problem. */
+  setupShown: false,
   model: null,
   /** Material slots of the loaded model, in model order: { name, triangles, el, texture } */
   slots: [],
@@ -24,6 +28,8 @@ const ext = (path) => (path.split(".").pop() || "").toLowerCase();
 const basename = (path) => path.split(/[\\/]/).pop();
 const stem = (path) => basename(path).replace(/\.[^.]+$/, "");
 const busy = () => state.running || state.loadingModel;
+/** Mirrors bmod_core::sanitize_name. */
+const sanitize = (s) => s.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 
 function refresh() {
   const ready =
@@ -147,7 +153,7 @@ async function loadModel(path) {
   $("model-hint").textContent = "Reading materials…";
   $("model-card").classList.add("filled");
   if (!state.nameTouched) {
-    $("name").value = stem(path).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    $("name").value = sanitize(stem(path));
   }
   refresh();
   try {
@@ -216,7 +222,11 @@ async function convert() {
       },
     });
     state.lastDir = res.dir;
+    state.setupShown = false;
     showResult(true, `Created ${res.modelPath}`, res.dir);
+    if (state.settings?.openAfterConvert) {
+      invoke("open_folder", { path: res.dir }).catch((e) => log(`error: ${e}`));
+    }
   } catch (err) {
     log(`error: ${err}`);
     showResult(false, "Conversion failed", String(err));
@@ -224,6 +234,144 @@ async function convert() {
     state.running = false;
     refresh();
   }
+}
+
+// ---------- Environment / settings ----------
+
+async function loadEnvironment() {
+  const env = await invoke("environment");
+  state.env = env;
+  $("model-hint").textContent = state.model ? $("model-hint").textContent : env.modelExtensions.map((e) => "." + e).join(" · ");
+  const pill = $("env");
+  pill.classList.remove("pending", "ok", "bad");
+  if (env.problem) {
+    pill.classList.add("bad");
+    pill.textContent = "studiomdl not available";
+    pill.title = env.problem;
+    state.setupShown = true;
+    showResult(false, "Setup needed", `${env.problem}\n\nYou can set the path under Settings (gear icon).`);
+  } else {
+    pill.classList.add("ok");
+    pill.textContent = env.wine ? "studiomdl ready (Wine)" : "studiomdl ready";
+    pill.title = env.studiomdl;
+    if (state.setupShown) {
+      $("result").hidden = true;
+      state.setupShown = false;
+    }
+  }
+  refresh();
+}
+
+/** Puts the default scale and collision onto the main form. */
+function applyDefaults(settings) {
+  $("scale").value = settings.defaultScale;
+  $("collision").value = settings.defaultCollision;
+}
+
+function defaultSettings() {
+  return {
+    outputDir: "",
+    modelDir: "bmod",
+    keepSources: true,
+    openAfterConvert: false,
+    defaultScale: state.env?.defaultScale ?? 39.37,
+    defaultCollision: "convex",
+    studiomdlPath: "",
+    winePath: "",
+  };
+}
+
+function fillSettingsForm(s) {
+  $("set-output-dir").value = s.outputDir;
+  $("set-model-dir").value = s.modelDir;
+  $("set-keep-sources").checked = s.keepSources;
+  $("set-open-after").checked = s.openAfterConvert;
+  $("set-default-scale").value = s.defaultScale;
+  $("set-default-collision").value = s.defaultCollision;
+  $("set-studiomdl").value = s.studiomdlPath;
+  $("set-wine").value = s.winePath;
+  updateModelPreview();
+}
+
+function readSettingsForm() {
+  return {
+    outputDir: $("set-output-dir").value,
+    modelDir: $("set-model-dir").value,
+    keepSources: $("set-keep-sources").checked,
+    openAfterConvert: $("set-open-after").checked,
+    defaultScale: parseFloat($("set-default-scale").value),
+    defaultCollision: $("set-default-collision").value,
+    studiomdlPath: $("set-studiomdl").value,
+    winePath: $("set-wine").value,
+  };
+}
+
+function updateModelPreview() {
+  const dir = sanitize($("set-model-dir").value) || "bmod";
+  const name = sanitize($("name").value) || "name";
+  $("set-model-preview").textContent = `Spawns as models/${dir}/${name}.mdl`;
+}
+
+function openSettings() {
+  if (!state.settings) return;
+  fillSettingsForm(state.settings);
+  $("set-output-dir").placeholder = state.env?.defaultOutputRoot || "";
+  $("set-wine-field").hidden = !!state.env?.isWindows;
+  $("settings-error").hidden = true;
+  $("settings").showModal();
+}
+
+async function saveSettings(e) {
+  e.preventDefault();
+  const draft = readSettingsForm();
+  // NaN would serialize as null; send 0 so the backend reports "must be positive".
+  if (!Number.isFinite(draft.defaultScale)) draft.defaultScale = 0;
+  $("settings-save").disabled = true;
+  try {
+    const prev = state.settings;
+    const saved = await invoke("save_settings", { settings: draft });
+    state.settings = saved;
+    if (saved.defaultScale !== prev.defaultScale || saved.defaultCollision !== prev.defaultCollision) {
+      applyDefaults(saved);
+    }
+    $("settings").close();
+    await loadEnvironment();
+  } catch (err) {
+    const box = $("settings-error");
+    box.textContent = String(err);
+    box.hidden = false;
+  } finally {
+    $("settings-save").disabled = false;
+  }
+}
+
+async function browseSetting(button) {
+  const input = $(button.dataset.browse);
+  const kind = button.dataset.kind;
+  const current = input.value.trim() || undefined;
+  const path = await open({
+    multiple: false,
+    directory: kind === "folder",
+    defaultPath: current,
+    filters: kind === "exe" ? [{ name: "studiomdl.exe", extensions: ["exe"] }] : undefined,
+  });
+  if (typeof path === "string") input.value = path;
+}
+
+function initSettings() {
+  const dialog = $("settings");
+  $("settings-open").addEventListener("click", openSettings);
+  $("settings-form").addEventListener("submit", saveSettings);
+  $("settings-cancel").addEventListener("click", () => dialog.close());
+  $("settings-reset").addEventListener("click", () => fillSettingsForm(defaultSettings()));
+  $("set-model-dir").addEventListener("input", updateModelPreview);
+  // Clicking the backdrop (the dialog element itself, outside the form) closes it.
+  dialog.addEventListener("click", (e) => {
+    if (e.target === dialog) dialog.close();
+  });
+  dialog.querySelectorAll("[data-browse]").forEach((b) =>
+    b.addEventListener("click", () => browseSetting(b).catch((err) => log(`error: ${err}`))),
+  );
 }
 
 /** The material slot under a drop position (physical pixels), if any. */
@@ -268,23 +416,10 @@ async function init() {
     }
   });
 
-  const env = await invoke("environment");
-  state.env = env;
-  $("scale").value = env.defaultScale;
-  $("model-hint").textContent = env.modelExtensions.map((e) => "." + e).join(" · ");
-  const pill = $("env");
-  pill.classList.remove("pending");
-  if (env.problem) {
-    pill.classList.add("bad");
-    pill.textContent = "studiomdl not available";
-    pill.title = env.problem;
-    showResult(false, "Setup needed", env.problem);
-  } else {
-    pill.classList.add("ok");
-    pill.textContent = env.wine ? "studiomdl ready (Wine)" : "studiomdl ready";
-    pill.title = env.studiomdl;
-  }
-  refresh();
+  initSettings();
+  state.settings = await invoke("get_settings");
+  applyDefaults(state.settings);
+  await loadEnvironment();
 }
 
 init().catch((e) => log(`error: ${e}`));

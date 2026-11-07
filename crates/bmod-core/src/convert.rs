@@ -1,11 +1,12 @@
 //! End-to-end conversion: model + textures -> self-contained GMod addon folder.
 //!
-//! Output layout (`<output_root>/bmod_<name>_<timestamp>/`):
+//! Output layout (`<output_root>/bmod_<name>_<timestamp>/`, with `<dir>` the
+//! model folder, `bmod` by default):
 //! ```text
-//! models/bmod/<name>.mdl (+ .vvd, .phy, .dx80.vtx, .dx90.vtx)
-//! materials/models/bmod/<name>/<slot>.vmt   (one per material slot)
-//! materials/models/bmod/<name>/<slot>.vtf   (one per distinct texture file)
-//! src/<name>.qc, <name>_ref.smd, <name>_phys.smd
+//! models/<dir>/<name>.mdl (+ .vvd, .phy, .dx80.vtx, .dx90.vtx)
+//! materials/models/<dir>/<name>/<slot>.vmt   (one per material slot)
+//! materials/models/<dir>/<name>/<slot>.vtf   (one per distinct texture file)
+//! src/<name>.qc, <name>_ref.smd, <name>_phys.smd   (unless `keep_sources` is off)
 //! ```
 //! The folder can be dropped straight into `garrysmod/addons/`.
 
@@ -15,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use crate::compiler::Studiomdl;
+use crate::compiler::{Studiomdl, ToolPaths};
 use crate::{Logger, collision, import, qc, sanitize_name, smd, vmt, vtf};
 
 /// Triangle count above which we warn that the prop is heavy for GMod.
@@ -24,6 +25,8 @@ const HIGH_POLY_WARNING: usize = 10_000;
 const MAX_MATERIALS: usize = 32;
 
 pub const DEFAULT_SCALE: f32 = 39.37;
+/// Folder under `models/` and `materials/models/` used when none is given.
+pub const DEFAULT_MODEL_DIR: &str = "bmod";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AlphaMode {
@@ -78,6 +81,11 @@ pub struct ConvertOptions {
     pub collision: CollisionMode,
     /// Directory in which the timestamped output folder is created.
     pub output_root: PathBuf,
+    /// Folder under `models/` for the prop; sanitized. Empty means [`DEFAULT_MODEL_DIR`].
+    pub model_dir: String,
+    /// Keep the generated `src/` (QC and SMD files) after a successful compile.
+    pub keep_sources: bool,
+    pub tools: ToolPaths,
 }
 
 #[derive(Clone, Debug)]
@@ -125,6 +133,10 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
     if !(opts.scale.is_finite() && opts.scale > 0.0) {
         bail!("scale must be a positive number");
     }
+    let model_dir = match sanitize_name(&opts.model_dir) {
+        d if d.is_empty() => DEFAULT_MODEL_DIR.to_string(),
+        d => d,
+    };
     let surfaceprop = match sanitize_name(&opts.surfaceprop) {
         s if s.is_empty() => "default".to_string(),
         s => s,
@@ -138,7 +150,7 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
     }
 
     // Fail fast on a missing toolchain before doing any work.
-    let studiomdl = Studiomdl::locate()?;
+    let studiomdl = Studiomdl::locate_with(&opts.tools)?;
     log(&format!("using studiomdl: {}", studiomdl.exe.display()));
 
     // --- Model ---
@@ -192,7 +204,7 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
     let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
     let dir = unique_dir(&opts.output_root.join(format!("bmod_{name}_{stamp}")));
     let src_dir = dir.join("src");
-    let mat_rel = format!("models/bmod/{name}");
+    let mat_rel = format!("models/{model_dir}/{name}");
     let mat_dir = dir.join("materials").join(&mat_rel);
     fs::create_dir_all(&src_dir).with_context(|| format!("failed to create {}", src_dir.display()))?;
     fs::create_dir_all(&mat_dir)?;
@@ -254,7 +266,7 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
         }
     };
 
-    let model_path = format!("bmod/{name}.mdl");
+    let model_path = format!("{model_dir}/{name}.mdl");
     let qc_path = src_dir.join(format!("{name}.qc"));
     fs::write(
         &qc_path,
@@ -280,6 +292,9 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
     let mdl = dir.join("models").join(&model_path);
     if !mdl.is_file() {
         bail!("studiomdl finished but {} was not created; see the log above", mdl.display());
+    }
+    if !opts.keep_sources {
+        fs::remove_dir_all(&src_dir).with_context(|| format!("failed to remove {}", src_dir.display()))?;
     }
     log(&format!("done: models/{model_path}"));
     Ok(ConvertOutput { dir, mdl, model_path: format!("models/{model_path}") })
