@@ -53,6 +53,12 @@ header {
 h1 { margin: 0; font-size: 22px; letter-spacing: 0.5px; }
 .brand p { margin: 2px 0 0; color: var(--muted); }
 
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .env {
   padding: 5px 12px;
   border-radius: 999px;
