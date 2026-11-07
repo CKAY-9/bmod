@@ -15,7 +15,8 @@ pub mod vtf;
 
 pub use compiler::ToolPaths;
 pub use convert::{
-    AlphaMode, CollisionMode, ConvertOptions, ConvertOutput, MaterialOptions, ModelInfo, Scroll, convert, inspect_model,
+    AlphaMode, Blank, Bodygroup, CollisionMode, ConvertOptions, ConvertOutput, MaterialOptions, ModelInfo, ModelPart, Scroll,
+    convert, inspect_model,
 };
 
 /// Receives human-readable progress lines during a conversion.

@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use bmod_core::convert::DEFAULT_SCALE;
-use bmod_core::{AlphaMode, CollisionMode, ConvertOptions, MaterialOptions, Scroll, convert, inspect_model};
+use bmod_core::{
+    AlphaMode, Blank, Bodygroup, CollisionMode, ConvertOptions, MaterialOptions, Scroll, convert, inspect_model,
+};
 
 const USAGE: &str = "\
 usage: bmod-cli <model> [texture] [options]
@@ -16,10 +18,14 @@ usage: bmod-cli <model> [texture] [options]
   --name <name>           asset name (default: model file name)
   --scale <n>             units per model unit (default: 39.37)
   --concave               concave collision that keeps holes open (cups, boxes)
+  --group <name>=<part>[,<part>…][:shown|hidden|always]
+                          bodygroup switching between the listed parts (objects in
+                          the model file); with an empty option that is last
+                          (shown, the default), first (hidden), or absent (always)
   --model-dir <dir>       folder under models/ (default: bmod)
   --out <dir>             where to create the output folder (default: current directory)
   --no-sources            delete the generated src/ (.qc, .smd) after compiling
-  --list                  print the model's material slots and exit";
+  --list                  print the model's material slots and parts, and exit";
 
 fn main() -> ExitCode {
     match run() {
@@ -46,6 +52,7 @@ fn run() -> anyhow::Result<()> {
     let mut model_dir = String::new();
     let mut output_root = std::env::current_dir()?;
     let mut keep_sources = true;
+    let mut bodygroups = Vec::new();
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -61,6 +68,19 @@ fn run() -> anyhow::Result<()> {
                 let (slot, spec) = split_kv(&v)?;
                 let (rate, angle) = spec.split_once(':').unwrap_or((spec, "0"));
                 scrolls.push((slot.to_string(), Scroll { rate: rate.parse()?, angle: angle.parse()? }));
+            }
+            "--group" => {
+                let v = value()?;
+                let (group, spec) = v.split_once('=').ok_or_else(|| anyhow::anyhow!("expected <name>=<parts>, got '{v}'"))?;
+                let (parts, blank) = spec.rsplit_once(':').unwrap_or((spec, "shown"));
+                let blank = match blank {
+                    "shown" => Blank::Last,
+                    "hidden" => Blank::First,
+                    "always" => Blank::None,
+                    other => anyhow::bail!("unknown --group mode '{other}' (use shown, hidden or always)"),
+                };
+                let parts = parts.split(',').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect();
+                bodygroups.push(Bodygroup { name: group.to_string(), parts, blank });
             }
             "--name" => name = value()?,
             "--scale" => scale = value()?.parse()?,
@@ -82,8 +102,13 @@ fn run() -> anyhow::Result<()> {
 
     let info = inspect_model(&model, &|line| println!("{line}"))?;
     if list {
+        println!("materials:");
         for m in &info.materials {
-            println!("{}\t{} triangles", m.name, m.triangles);
+            println!("  {}\t{} triangles", m.name, m.triangles);
+        }
+        println!("parts:");
+        for p in &info.parts {
+            println!("  {}\t{} triangles", p.name, p.triangles);
         }
         return Ok(());
     }
@@ -115,6 +140,7 @@ fn run() -> anyhow::Result<()> {
         scale,
         surfaceprop: "default".into(),
         collision,
+        bodygroups,
         model_dir,
         keep_sources,
         tools: Default::default(),

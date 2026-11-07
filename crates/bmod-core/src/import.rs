@@ -33,7 +33,7 @@ pub fn load_model(path: &Path, log: Logger) -> Result<Mesh> {
     if mesh.triangles.is_empty() {
         bail!("{} contains no triangles", path.display());
     }
-    mesh.prune_unused_materials();
+    mesh.prune_unused();
     if !mesh.is_finite() {
         bail!("{} contains invalid (NaN/infinite) vertex data", path.display());
     }
@@ -50,14 +50,22 @@ fn load_gltf(path: &Path, log: Logger) -> Result<Mesh> {
 
     let mut mesh = Mesh::default();
     let mut missing_uvs = false;
-    let mut stack: Vec<(gltf::Node, Mat4)> =
-        scene.nodes().map(|n| (n, Mat4::IDENTITY)).collect();
+    // Depth-first in file order (pushed reversed), so slots and parts list in the outliner's order.
+    let mut stack: Vec<(gltf::Node, Mat4)> = scene.nodes().map(|n| (n, Mat4::IDENTITY)).collect();
+    stack.reverse();
 
     while let Some((node, parent)) = stack.pop() {
         let world = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
+        let first_child = stack.len();
         stack.extend(node.children().map(|c| (c, world)));
+        stack[first_child..].reverse();
 
         let Some(gmesh) = node.mesh() else { continue };
+        // Blender names the node after the object and the mesh after its data block.
+        let part = match (node.name(), gmesh.name()) {
+            (Some(name), _) | (None, Some(name)) => mesh.part_slot(name),
+            (None, None) => mesh.part_slot(&format!("part_{}", node.index())),
+        };
         let normal_mat = Mat3::from_mat4(world).inverse().transpose();
         let mirrored = world.determinant() < 0.0;
 
@@ -105,7 +113,7 @@ fn load_gltf(path: &Path, log: Logger) -> Result<Mesh> {
             };
             for tri in indices.as_chunks::<3>().0 {
                 let [a, b, c] = [vertex(tri[0])?, vertex(tri[1])?, vertex(tri[2])?];
-                mesh.push(if mirrored { [a, c, b] } else { [a, b, c] }, material);
+                mesh.push(if mirrored { [a, c, b] } else { [a, b, c] }, material, part);
             }
         }
     }
@@ -141,6 +149,8 @@ fn load_obj(path: &Path, log: Logger) -> Result<Mesh> {
             },
             None => mesh.material_slot("default"),
         };
+        // tobj splits an object at every material change, keeping its name.
+        let part = mesh.part_slot(&model.name);
         let positions: Vec<[f32; 3]> = m.positions.as_chunks::<3>().0.iter().map(|p| [p[0], p[1], p[2]]).collect();
         if m.indices.iter().any(|&i| i as usize >= positions.len()) {
             bail!("OBJ index out of range in object '{}'", model.name);
@@ -165,7 +175,7 @@ fn load_obj(path: &Path, log: Logger) -> Result<Mesh> {
             }
         };
         for tri in indices.as_chunks::<3>().0 {
-            mesh.push([vertex(tri[0]), vertex(tri[1]), vertex(tri[2])], material);
+            mesh.push([vertex(tri[0]), vertex(tri[1]), vertex(tri[2])], material, part);
         }
     }
     if missing_uvs {
@@ -247,6 +257,15 @@ mod tests {
     }
 
     #[test]
+    fn gltf_objects_become_parts_in_file_order() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/printer.glb");
+        let mesh = load_model(&path, &|_| {}).unwrap();
+        assert_eq!(mesh.parts, ["printer", "screen"]);
+        assert_eq!(mesh.materials, ["body", "money"]);
+        assert_eq!(mesh.part_triangle_counts(), [12, 2]);
+    }
+
+    #[test]
     fn obj_material_slots() {
         let dir = std::env::temp_dir().join(format!("bmod-test-mtl-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -262,6 +281,28 @@ mod tests {
         let mesh = load_model(&path, &|_| {}).unwrap();
         assert_eq!(mesh.materials, ["body", "money_001"]);
         assert_eq!(mesh.material_triangle_counts(), [2, 1]);
+        assert_eq!(mesh.parts, ["a", "b"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn obj_object_with_several_materials_is_one_part() {
+        let dir = std::env::temp_dir().join(format!("bmod-test-parts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("p.mtl"), "newmtl Wood\nnewmtl Metal\n").unwrap();
+        let path = dir.join("p.obj");
+        std::fs::write(
+            &path,
+            "mtllib p.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\n\
+             o Crate\nusemtl Wood\nf 1 2 3\nusemtl Metal\nf 2 4 3\n\
+             o Lid.001\nusemtl Wood\nf 1 3 4\n",
+        )
+        .unwrap();
+        let mesh = load_model(&path, &|_| {}).unwrap();
+        assert_eq!(mesh.parts, ["crate", "lid_001"]);
+        assert_eq!(mesh.part_triangle_counts(), [2, 1]);
+        assert_eq!(mesh.subset(&[1]).triangles.len(), 1);
+        assert_eq!(mesh.subset(&[1]).materials, ["wood", "metal"]);
         std::fs::remove_dir_all(dir).ok();
     }
 }

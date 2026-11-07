@@ -94,8 +94,8 @@ mod tests {
         let mut mesh = Mesh::default();
         let body = mesh.material_slot("Body");
         let money = mesh.material_slot("Money.001");
-        mesh.push([v(0.0), v(1.0), v(2.0)], body);
-        mesh.push([v(3.0), v(4.0), v(5.0)], money);
+        mesh.push([v(0.0), v(1.0), v(2.0)], body, 0);
+        mesh.push([v(3.0), v(4.0), v(5.0)], money, 0);
         let smd = reference(&mesh);
         assert!(smd.starts_with("version 1\nnodes\n"));
         assert!(smd.contains("triangles\nbody\n0 0.000000 0.000000 0.000000 0.000000 0.000000 1.000000 0.500000 1.000000\n"));

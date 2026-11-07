@@ -7,6 +7,7 @@
 //! materials/models/<dir>/<name>/<slot>.vmt   (one per material slot)
 //! materials/models/<dir>/<name>/<slot>.vtf   (one per distinct texture file)
 //! src/<name>.qc, <name>_ref.smd, <name>_phys.smd   (unless `keep_sources` is off)
+//! src/<name>_part_<part>.smd                       (one per part in a bodygroup)
 //! ```
 //! The folder can be dropped straight into `garrysmod/addons/`.
 
@@ -23,6 +24,10 @@ use crate::{Logger, collision, import, qc, sanitize_name, smd, vmt, vtf};
 const HIGH_POLY_WARNING: usize = 10_000;
 /// studiomdl's limit on materials per model.
 const MAX_MATERIALS: usize = 32;
+/// studiomdl's limit on body parts (MAXSTUDIOBODYPARTS), one of which is the base `$body`.
+const MAX_BODYGROUPS: usize = 31;
+/// Name of the always-visible `$body`; bodygroups can't reuse it.
+const BASE_BODY: &str = "body";
 
 pub const DEFAULT_SCALE: f32 = 39.37;
 /// Folder under `models/` and `materials/models/` used when none is given.
@@ -57,6 +62,30 @@ pub struct Scroll {
     pub angle: f32,
 }
 
+/// Whether a bodygroup has an empty option, and where.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Blank {
+    /// No empty option: one of the parts is always shown.
+    None,
+    /// Empty option after the parts: shown by default, can be hidden.
+    #[default]
+    Last,
+    /// Empty option before the parts: hidden by default, can be shown.
+    First,
+}
+
+/// A `$bodygroup`: a set of parts of which exactly one (or none, with a blank
+/// option) is shown at a time, switchable in-game. Parts not in any bodygroup
+/// are always shown.
+#[derive(Clone, Debug)]
+pub struct Bodygroup {
+    /// Shown in GMod's bodygroup menu; sanitized.
+    pub name: String,
+    /// Part names as reported by [`inspect_model`], in option order.
+    pub parts: Vec<String>,
+    pub blank: Blank,
+}
+
 /// Settings for one material slot of the model.
 #[derive(Clone, Debug)]
 pub struct MaterialOptions {
@@ -79,6 +108,8 @@ pub struct ConvertOptions {
     pub scale: f32,
     pub surfaceprop: String,
     pub collision: CollisionMode,
+    /// Toggleable parts. Empty means the whole model is one always-visible body.
+    pub bodygroups: Vec<Bodygroup>,
     /// Directory in which the timestamped output folder is created.
     pub output_root: PathBuf,
     /// Folder under `models/` for the prop; sanitized. Empty means [`DEFAULT_MODEL_DIR`].
@@ -101,9 +132,17 @@ pub struct MaterialSlot {
     pub triangles: usize,
 }
 
+/// An object from the model file, which can be put in a bodygroup.
+#[derive(Clone, Debug)]
+pub struct ModelPart {
+    pub name: String,
+    pub triangles: usize,
+}
+
 #[derive(Clone, Debug)]
 pub struct ModelInfo {
     pub materials: Vec<MaterialSlot>,
+    pub parts: Vec<ModelPart>,
     pub triangles: usize,
 }
 
@@ -111,6 +150,7 @@ pub struct ModelInfo {
 pub fn inspect_model(path: &Path, log: Logger) -> Result<ModelInfo> {
     let mesh = import::load_model(path, log)?;
     let counts = mesh.material_triangle_counts();
+    let part_counts = mesh.part_triangle_counts();
     Ok(ModelInfo {
         triangles: mesh.triangles.len(),
         materials: mesh
@@ -119,7 +159,77 @@ pub fn inspect_model(path: &Path, log: Logger) -> Result<ModelInfo> {
             .zip(counts)
             .map(|(name, triangles)| MaterialSlot { name, triangles })
             .collect(),
+        parts: mesh
+            .parts
+            .into_iter()
+            .zip(part_counts)
+            .map(|(name, triangles)| ModelPart { name, triangles })
+            .collect(),
     })
+}
+
+/// Which parts go where, as indices into [`Mesh::parts`].
+#[derive(Debug, PartialEq)]
+struct BodyLayout {
+    /// Always-visible parts.
+    base: Vec<u32>,
+    /// Bodygroup name and its options; `None` is the blank option.
+    groups: Vec<(String, Vec<Option<u32>>)>,
+}
+
+impl BodyLayout {
+    /// Parts visible when the prop spawns: the base plus option 0 of each group.
+    fn default_visible(&self) -> Vec<u32> {
+        let first = self.groups.iter().filter_map(|(_, options)| options[0]);
+        self.base.iter().copied().chain(first).collect()
+    }
+}
+
+/// Checks the requested bodygroups against the model's parts.
+fn plan_bodies(parts: &[String], requested: &[Bodygroup], log: Logger) -> Result<BodyLayout> {
+    let mut owner: Vec<Option<usize>> = vec![None; parts.len()];
+    let mut groups: Vec<(String, Vec<Option<u32>>)> = Vec::new();
+    for group in requested {
+        let name = sanitize_name(&group.name);
+        if name.is_empty() {
+            bail!("bodygroup name '{}' needs letters or numbers", group.name);
+        }
+        if name == BASE_BODY {
+            bail!("'{BASE_BODY}' is reserved for the always-visible parts; rename that bodygroup");
+        }
+        if groups.iter().any(|(n, _)| *n == name) {
+            bail!("there are two bodygroups named '{name}'");
+        }
+        let mut options = Vec::new();
+        for raw in &group.parts {
+            let part = sanitize_name(raw);
+            let Some(i) = parts.iter().position(|p| *p == part) else {
+                log(&format!("warning: [{name}] ignoring unknown part '{raw}'"));
+                continue;
+            };
+            match owner[i] {
+                Some(g) if g == groups.len() => continue, // listed twice in this group
+                Some(g) => bail!("part '{part}' is in two bodygroups: '{}' and '{name}'", groups[g].0),
+                None => owner[i] = Some(groups.len()),
+            }
+            options.push(Some(i as u32));
+        }
+        if options.is_empty() {
+            log(&format!("warning: skipping bodygroup '{name}', which has no parts"));
+            continue;
+        }
+        match group.blank {
+            Blank::None => {}
+            Blank::Last => options.push(None),
+            Blank::First => options.insert(0, None),
+        }
+        groups.push((name, options));
+    }
+    if groups.len() > MAX_BODYGROUPS {
+        bail!("{} bodygroups is too many; Source allows at most {MAX_BODYGROUPS}", groups.len());
+    }
+    let base = (0..parts.len() as u32).filter(|&i| owner[i as usize].is_none()).collect();
+    Ok(BodyLayout { base, groups })
 }
 
 pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
@@ -199,6 +309,7 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
             log(&format!("warning: ignoring settings for unknown material '{}'", m.slot));
         }
     }
+    let bodies = plan_bodies(&mesh.parts, &opts.bodygroups, log)?;
 
     // --- Output folder ---
     let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
@@ -248,17 +359,55 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
     // --- Geometry ---
     let ref_smd = format!("{name}_ref.smd");
     let phys_smd = format!("{name}_phys.smd");
-    fs::write(src_dir.join(&ref_smd), smd::reference(&mesh))?;
+    let reference_smd = if bodies.groups.is_empty() {
+        fs::write(src_dir.join(&ref_smd), smd::reference(&mesh))?;
+        Some(ref_smd.as_str())
+    } else if !bodies.base.is_empty() {
+        fs::write(src_dir.join(&ref_smd), smd::reference(&mesh.subset(&bodies.base)))?;
+        Some(ref_smd.as_str())
+    } else {
+        None
+    };
+    let part_smd = |p: u32| format!("{name}_part_{}.smd", mesh.parts[p as usize]);
+    for (group, options) in &bodies.groups {
+        let labels: Vec<&str> = options
+            .iter()
+            .map(|o| o.map_or("(empty)", |p| mesh.parts[p as usize].as_str()))
+            .collect();
+        log(&format!("bodygroup {group}: {}", labels.join(", ")));
+        for &p in options.iter().flatten() {
+            fs::write(src_dir.join(part_smd(p)), smd::reference(&mesh.subset(&[p])))?;
+        }
+    }
+    let part_smds: Vec<Vec<Option<String>>> =
+        bodies.groups.iter().map(|(_, options)| options.iter().map(|o| o.map(part_smd)).collect()).collect();
+    let qc_bodygroups: Vec<qc::QcBodygroup> = bodies
+        .groups
+        .iter()
+        .zip(&part_smds)
+        .map(|((group, _), smds)| qc::QcBodygroup { name: group, options: smds.iter().map(Option::as_deref).collect() })
+        .collect();
+
+    // Collision can't change with bodygroups; it follows what the prop spawns with.
+    let solid = match bodies.default_visible() {
+        _ if bodies.groups.is_empty() => None,
+        visible if visible.is_empty() => {
+            log("note: every part starts hidden, so the collision model covers all of them");
+            None
+        }
+        visible => Some(mesh.subset(&visible)),
+    };
+    let solid = solid.as_ref().unwrap_or(&mesh);
     let concave_pieces = match opts.collision {
         CollisionMode::Convex => {
-            let hull = collision::convex_hull(&mesh);
+            let hull = collision::convex_hull(solid);
             log(&format!("collision: convex hull with {} faces", hull.len()));
             fs::write(src_dir.join(&phys_smd), smd::physics(&[hull]))?;
             None
         }
         CollisionMode::Concave => {
             log("collision: decomposing into convex pieces…");
-            let pieces = collision::convex_decomposition(&mesh);
+            let pieces = collision::convex_decomposition(solid);
             let faces: usize = pieces.iter().map(Vec::len).sum();
             log(&format!("collision: {} convex piece(s), {faces} faces", pieces.len()));
             fs::write(src_dir.join(&phys_smd), smd::physics(&pieces))?;
@@ -273,7 +422,8 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
         qc::generate(&qc::QcParams {
             model_path: &model_path,
             cdmaterials: &format!("{mat_rel}/"),
-            reference_smd: &ref_smd,
+            reference_smd,
+            bodygroups: &qc_bodygroups,
             physics_smd: &phys_smd,
             surfaceprop: &surfaceprop,
             concave_pieces,
@@ -330,4 +480,57 @@ fn unique_dir(base: &Path) -> PathBuf {
         .map(|i| PathBuf::from(format!("{}_{i}", base.display())))
         .find(|p| !p.exists())
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parts() -> Vec<String> {
+        ["body", "lid", "hat_a", "hat_b"].map(String::from).to_vec()
+    }
+
+    fn group(name: &str, parts: &[&str], blank: Blank) -> Bodygroup {
+        Bodygroup { name: name.into(), parts: parts.iter().map(|p| p.to_string()).collect(), blank }
+    }
+
+    #[test]
+    fn plans_bodygroups() {
+        let req = [group("Lid", &["lid"], Blank::Last), group("hat", &["hat_a", "Hat A", "hat_b"], Blank::First)];
+        let layout = plan_bodies(&parts(), &req, &|_| {}).unwrap();
+        assert_eq!(
+            layout,
+            BodyLayout {
+                base: vec![0],
+                groups: vec![("lid".into(), vec![Some(1), None]), ("hat".into(), vec![None, Some(2), Some(3)])],
+            }
+        );
+        assert_eq!(layout.default_visible(), [0, 1]);
+    }
+
+    #[test]
+    fn no_bodygroups_keeps_everything_in_the_base() {
+        let layout = plan_bodies(&parts(), &[], &|_| {}).unwrap();
+        assert_eq!(layout.base, [0, 1, 2, 3]);
+        assert!(layout.groups.is_empty());
+    }
+
+    #[test]
+    fn skips_unknown_parts_and_empty_groups() {
+        let logged = std::sync::Mutex::new(Vec::new());
+        let log = |l: &str| logged.lock().unwrap().push(l.to_string());
+        let req = [group("ghost", &["nope"], Blank::Last), group("lid", &["lid", "nope"], Blank::None)];
+        let layout = plan_bodies(&parts(), &req, &log).unwrap();
+        assert_eq!(layout.groups, [("lid".into(), vec![Some(1)])]);
+        assert_eq!(logged.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn rejects_bad_bodygroups() {
+        let err = |req: &[Bodygroup]| plan_bodies(&parts(), req, &|_| {}).unwrap_err().to_string();
+        assert!(err(&[group("a", &["lid"], Blank::Last), group("b", &["lid"], Blank::Last)]).contains("two bodygroups"));
+        assert!(err(&[group("x", &["lid"], Blank::Last), group("X", &["hat_a"], Blank::Last)]).contains("named 'x'"));
+        assert!(err(&[group("Body", &["lid"], Blank::Last)]).contains("reserved"));
+        assert!(err(&[group("!!", &["lid"], Blank::Last)]).contains("letters"));
+    }
 }

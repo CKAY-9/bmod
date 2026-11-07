@@ -39,6 +39,14 @@
       <div id="materials"></div>
     </section>
 
+    <section class="panel" id="parts-panel" hidden>
+      <h2>Parts</h2>
+      <p class="muted" id="parts-hint"></p>
+      <div id="parts"></div>
+      <div id="bodygroups"></div>
+      <datalist id="group-names"></datalist>
+    </section>
+
     <section class="panel options">
       <label class="field wide">
         <span>Name</span>
@@ -165,6 +173,37 @@
       </footer>
     </form>
   </dialog>
+
+  <template id="part-template">
+    <div class="part">
+      <div class="part-head">
+        <strong class="part-name"></strong>
+        <span class="muted part-tris"></span>
+      </div>
+      <label class="check"><input type="checkbox" class="part-toggle"><span>Toggleable</span></label>
+      <label class="field part-group-field">
+        <span>Group</span>
+        <input type="text" class="part-group" list="group-names" spellcheck="false" autocomplete="off">
+      </label>
+    </div>
+  </template>
+
+  <template id="group-template">
+    <div class="group">
+      <div class="group-head">
+        <strong class="group-name"></strong>
+        <span class="muted group-options"></span>
+      </div>
+      <label class="field">
+        <span>When spawned</span>
+        <select class="group-blank">
+          <option value="last">Shown, can be hidden</option>
+          <option value="first">Hidden, can be shown</option>
+          <option value="none">Shown, can't be hidden</option>
+        </select>
+      </label>
+    </div>
+  </template>
 
   <template id="slot-template">
     <div class="slot">

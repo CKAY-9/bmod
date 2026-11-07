@@ -16,6 +16,12 @@ const state = {
   slots: [],
   /** Per-slot settings remembered by slot name, so re-loading a re-exported model keeps them. */
   remembered: new Map(),
+  /** Parts (objects) of the loaded model, in model order: { name, triangles, el } */
+  parts: [],
+  /** Bodygroup name typed for each part ("" = always shown), remembered by part name. */
+  partGroups: new Map(),
+  /** "When spawned" choice per bodygroup, by group name: "last" | "first" | "none". */
+  groupBlank: new Map(),
   /** Textures dropped before a model was loaded. */
   pendingTextures: [],
   loadingModel: false,
@@ -139,6 +145,93 @@ function assignTexture(path, target) {
   else log(`warning: every material already has a texture; drop ${basename(path)} onto a specific material`);
 }
 
+// ---------- Parts / bodygroups ----------
+
+/** Group key for a part's input: sanitized like the backend, so "Hat" and "hat" match. */
+const groupKey = (value) => sanitize(value) || value.trim();
+
+/** Bodygroups in order of their first part: [{ name, parts: [partName] }]. */
+function currentGroups() {
+  const groups = new Map();
+  for (const p of state.parts) {
+    const key = groupKey(state.partGroups.get(p.name) || "");
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(p.name);
+  }
+  return [...groups].map(([name, parts]) => ({ name, parts }));
+}
+
+function renderGroups() {
+  const groups = currentGroups();
+  const list = $("bodygroups");
+  list.textContent = "";
+  for (const g of groups) {
+    const el = $("group-template").content.firstElementChild.cloneNode(true);
+    const blank = el.querySelector(".group-blank");
+    el.querySelector(".group-name").textContent = g.name;
+    blank.value = state.groupBlank.get(g.name) || "last";
+    const describe = () => {
+      const options = [...g.parts];
+      if (blank.value === "last") options.push("(empty)");
+      if (blank.value === "first") options.unshift("(empty)");
+      el.querySelector(".group-options").textContent =
+        g.parts.length > 1 || blank.value === "none" ? `Options: ${options.join(", ")}` : "";
+    };
+    blank.addEventListener("change", () => {
+      state.groupBlank.set(g.name, blank.value);
+      describe();
+    });
+    describe();
+    list.appendChild(el);
+  }
+  const names = $("group-names");
+  names.textContent = "";
+  for (const g of groups) names.appendChild(new Option(g.name));
+}
+
+function updatePartRow(part) {
+  const group = state.partGroups.get(part.name) || "";
+  part.el.querySelector(".part-toggle").checked = group !== "";
+  part.el.querySelector(".part-group-field").hidden = group === "";
+  const input = part.el.querySelector(".part-group");
+  if (input.value !== group && document.activeElement !== input) input.value = group;
+}
+
+function renderParts(parts) {
+  const list = $("parts");
+  list.textContent = "";
+  state.parts = parts.map((p) => {
+    const el = $("part-template").content.firstElementChild.cloneNode(true);
+    const part = { name: p.name, triangles: p.triangles, el };
+    el.querySelector(".part-name").textContent = p.name;
+    el.querySelector(".part-tris").textContent = `${p.triangles} triangle${p.triangles === 1 ? "" : "s"}`;
+    el.querySelector(".part-toggle").addEventListener("change", (e) => {
+      // A fresh toggleable part gets a group of its own, named after it.
+      state.partGroups.set(p.name, e.target.checked ? p.name : "");
+      updatePartRow(part);
+      renderGroups();
+      if (e.target.checked) el.querySelector(".part-group").select();
+    });
+    el.querySelector(".part-group").addEventListener("input", (e) => {
+      state.partGroups.set(p.name, e.target.value);
+      renderGroups();
+    });
+    // Clearing the name makes the part always shown again.
+    el.querySelector(".part-group").addEventListener("change", () => updatePartRow(part));
+    list.appendChild(el);
+    updatePartRow(part);
+    return part;
+  });
+  $("parts-panel").hidden = state.parts.length === 0;
+  $("parts-hint").textContent =
+    state.parts.length === 1
+      ? `The model is a single object, so there is nothing to toggle. To make pieces toggleable, keep them as separate objects in Blender instead of joining them.`
+      : "Each object in the model file is a part. Make a part toggleable to switch it on and off in-game (context menu → Bodygroups). Parts given the same group name are alternatives: one of them shows at a time.";
+  $("parts").hidden = state.parts.length === 1;
+  renderGroups();
+}
+
 // ---------- Model ----------
 
 async function loadModel(path) {
@@ -146,6 +239,8 @@ async function loadModel(path) {
     // Different model: start from fresh slots rather than carrying settings across.
     state.slots = [];
     state.remembered.clear();
+    state.partGroups.clear();
+    state.groupBlank.clear();
   }
   state.model = path;
   state.loadingModel = true;
@@ -160,11 +255,13 @@ async function loadModel(path) {
     const info = await invoke("inspect_model", { path });
     $("model-hint").textContent = `${path} · ${info.triangles} triangles`;
     renderSlots(info.materials);
+    renderParts(info.parts);
   } catch (err) {
     state.model = null;
     $("model-hint").textContent = path;
     $("model-card").classList.remove("filled");
     renderSlots([]);
+    renderParts([]);
     log(`error: ${err}`);
     showResult(false, "Could not read model", String(err));
   } finally {
@@ -219,6 +316,11 @@ async function convert() {
         scale: parseFloat($("scale").value),
         surfaceprop: $("surfaceprop").value,
         concave: $("collision").value === "concave",
+        bodygroups: currentGroups().map((g) => ({
+          name: g.name,
+          parts: g.parts,
+          blank: state.groupBlank.get(g.name) || "last",
+        })),
       },
     });
     state.lastDir = res.dir;

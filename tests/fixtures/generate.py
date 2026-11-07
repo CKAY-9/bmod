@@ -6,6 +6,7 @@ cube.obj / cube.glb + cube.png
 printer.glb + printer_body.png + printer_money.png
     "Money printer": a box (material "Body") with a screen strip on the front
     (material "Money") whose texture tiles vertically, for testing scrolling.
+    The box and strip are separate objects ("Printer", "Screen"), for testing bodygroups.
 
 Everything is Y-up in metres, like a Blender export. glTF UVs use a top-left origin.
 """
@@ -50,10 +51,11 @@ class Prim:
 FULL_UV = [(0, 0), (1, 0), (1, 1), (0, 1)]
 
 
-def write_glb(path, prims):
-    """prims: list of (material name, Prim). One mesh, one primitive per material."""
+def write_glb(path, objects):
+    """objects: list of (object name, [(material name, Prim)]). One node and mesh per
+    object, one primitive per material; objects can share materials."""
     blob = b""
-    views, accessors, gl_prims = [], [], []
+    views, accessors, materials, meshes = [], [], [], []
 
     def add(data, count, kind, comp, extra=None):
         nonlocal blob
@@ -65,22 +67,27 @@ def write_glb(path, prims):
         accessors.append(acc)
         return len(accessors) - 1
 
-    for mat_index, (_, p) in enumerate(prims):
+    def prim(mat, p):
+        if mat not in materials:
+            materials.append(mat)
         xs = list(zip(*p.pos))
         a_pos = add(b"".join(struct.pack("<3f", *v) for v in p.pos), len(p.pos), "VEC3", 5126,
                     {"min": [min(c) for c in xs], "max": [max(c) for c in xs]})
         a_nrm = add(b"".join(struct.pack("<3f", *v) for v in p.nrm), len(p.nrm), "VEC3", 5126)
         a_uv = add(b"".join(struct.pack("<2f", u, 1 - v) for u, v in p.uv), len(p.uv), "VEC2", 5126)
         a_idx = add(b"".join(struct.pack("<H", i) for i in p.idx), len(p.idx), "SCALAR", 5123)
-        gl_prims.append({"attributes": {"POSITION": a_pos, "NORMAL": a_nrm, "TEXCOORD_0": a_uv},
-                         "indices": a_idx, "material": mat_index})
+        return {"attributes": {"POSITION": a_pos, "NORMAL": a_nrm, "TEXCOORD_0": a_uv},
+                "indices": a_idx, "material": materials.index(mat)}
+
+    for _, prims in objects:
+        meshes.append({"primitives": [prim(mat, p) for mat, p in prims]})
     blob += b"\0" * (-len(blob) % 4)
 
     doc = {
-        "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
-        "nodes": [{"mesh": 0, "name": path.stem}],
-        "meshes": [{"primitives": gl_prims}],
-        "materials": [{"name": name} for name, _ in prims],
+        "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": list(range(len(objects)))}],
+        "nodes": [{"mesh": i, "name": name} for i, (name, _) in enumerate(objects)],
+        "meshes": meshes,
+        "materials": [{"name": name} for name in materials],
         "buffers": [{"byteLength": len(blob)}],
         "bufferViews": views, "accessors": accessors,
     }
@@ -101,7 +108,7 @@ def make_cube():
     lines += [f"vn {x} {y} {z}" for x, y, z in p.nrm]
     lines += ["f " + " ".join(f"{i + 1}/{i + 1}/{i + 1}" for i in p.idx[k:k + 3]) for k in range(0, len(p.idx), 3)]
     (OUT / "cube.obj").write_text("\n".join(lines) + "\n")
-    write_glb(OUT / "cube.glb", [("Cube", p)])
+    write_glb(OUT / "cube.glb", [("cube", [("Cube", p)])])
 
     img = Image.new("RGB", (600, 400))
     d = ImageDraw.Draw(img)
@@ -123,7 +130,7 @@ def make_printer():
     z = 0.2 + 0.002
     money = Prim()
     money.quad((0, 0, 1), [(-0.2, 0.08, z), (0.2, 0.08, z), (0.2, 0.28, z), (-0.2, 0.28, z)], FULL_UV)
-    write_glb(OUT / "printer.glb", [("Body", body), ("Money", money)])
+    write_glb(OUT / "printer.glb", [("Printer", [("Body", body)]), ("Screen", [("Money", money)])])
 
     img = Image.new("RGB", (512, 512), "#3b3f45")
     d = ImageDraw.Draw(img)

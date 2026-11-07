@@ -118,6 +118,36 @@ h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacin
 .slot-opts .scroll-field { flex-basis: 110px; min-width: 90px; }
 .slot-opts .check { padding-bottom: 7px; }
 
+#parts-hint { margin: 0 0 12px; }
+#parts { display: grid; gap: 6px; }
+.part {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.part-head { display: flex; align-items: baseline; gap: 10px; flex: 1 1 160px; min-width: 0; padding-bottom: 7px; }
+.part-name, .group-name { font-family: var(--mono); font-size: 14px; overflow-wrap: anywhere; }
+.part-tris { font-size: 12px; }
+.part-group-field { flex: 0 1 180px; min-width: 120px; }
+#bodygroups { display: grid; gap: 6px; margin-top: 12px; }
+#bodygroups:empty { display: none; }
+#bodygroups::before { content: "Bodygroups"; font-size: 12px; color: var(--muted); }
+.group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px 16px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--bg);
+}
+.group-head { display: grid; gap: 2px; flex: 1 1 160px; min-width: 0; padding-bottom: 4px; }
+.group .field { flex: 0 1 200px; min-width: 160px; }
+
 .file-card {
   display: grid;
   gap: 4px;

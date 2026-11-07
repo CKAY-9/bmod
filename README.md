@@ -30,6 +30,8 @@ cargo run -p bmod-cli -- model.glb texture.png       # one texture for every slo
 cargo run -p bmod-cli -- printer.glb --tex body=body.png --tex money=money.png \
     --scroll money=0.5:90 --name money_printer       # per-slot textures + scrolling
 cargo run -p bmod-cli -- cup.glb cup.png --concave   # collision that keeps the cup's mouth open
+cargo run -p bmod-cli -- printer.glb body.png --group screen=screen      # screen part can be switched off
+cargo run -p bmod-cli -- hat.glb hat.png --group hat=cap,tophat:hidden   # spawns bare; pick a cap or top hat
 cargo run -p bmod-cli -- --help                      # all options (--out, --model-dir, --no-sources, …)
 ```
 
@@ -40,7 +42,8 @@ Bundling installers (AppImage/deb/MSI) needs the Tauri CLI: `cargo install tauri
 1. Drop or browse a model (`.glb`, `.gltf`, `.obj`). BMod lists its material slots.
 2. Give each slot a texture (`.png`, `.jpg`, `.tga`, …) by clicking it or dropping an image onto it. Images dropped elsewhere fill the first empty slot.
 3. For each slot, set transparency, double-sided, and **Scroll** (speed in texture-widths per second, and angle) as needed.
-4. Set the name, scale, surface type and collision, then click **Convert**. A folder named `bmod_<name>_<timestamp>/` appears in the export folder (the working directory unless changed in Settings):
+4. Optionally, make some **Parts** toggleable (see [Bodygroups](#bodygroups)).
+5. Set the name, scale, surface type and collision, then click **Convert**. A folder named `bmod_<name>_<timestamp>/` appears in the export folder (the working directory unless changed in Settings):
 
 ```text
 models/bmod/<name>.mdl  (.vvd .phy .dx80.vtx .dx90.vtx)
@@ -48,6 +51,14 @@ materials/models/bmod/<name>/<slot>.vmt   one per material slot
 materials/models/bmod/<name>/<slot>.vtf   one per distinct texture file
 src/            generated .qc and .smd files, kept for reference
 ```
+
+### Bodygroups
+
+Each object in the model file (each Blender object) is a **part**. By default every part is always shown. Tick **Toggleable** on a part to put it in a bodygroup, which you can switch in-game from the context menu (**Bodygroups**) or with `Entity:SetBodygroup`.
+
+- A toggleable part gets a group named after it. Give several parts the same group name to make them alternatives: one shows at a time, in model order. Examples are a cap and a top hat in a `hat` group.
+- **When spawned** sets the group's starting state. *Shown, can be hidden* adds an empty option after the parts. *Hidden, can be shown* adds it before them. *Shown, can't be hidden* has no empty option, for alternatives where one must always show.
+- Collision does not change with bodygroups. It covers the parts that are visible when the prop spawns.
 
 ### Scrolling textures
 
@@ -73,7 +84,7 @@ The gear icon opens global settings, saved in BMod's config directory (for examp
 
 ### Preparing the model in Blender
 
-- Use one object (join with Ctrl+J) and one UV map, with all transforms applied (Ctrl+A). Use one material per texture, up to 32. Material names become the slot names.
+- Join everything that should always be visible into one object (Ctrl+J). Keep parts you want to toggle as separate objects. Use one UV map, with all transforms applied (Ctrl+A). Use one material per texture, up to 32. Material names become the slot names.
 - Export as **glTF 2.0 (.glb)**. The default scale of 39.37 turns Blender metres into Source units, which are roughly inches.
 - Use power-of-two textures, such as 1024×1024. Other sizes are resized automatically.
 
@@ -91,5 +102,5 @@ crates/bmod-core   conversion pipeline (import, SMD, QC, VTF/VMT, collision, stu
 crates/bmod-cli    headless front-end
 src-tauri          Tauri app shell
 ui                 frontend (plain HTML/CSS/JS, no build step)
-tests/fixtures     sample cube and money printer (regenerate with generate.py)
+tests/fixtures     sample cube and two-part money printer (regenerate with generate.py)
 ```

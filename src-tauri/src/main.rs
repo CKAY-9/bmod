@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use bmod_core::compiler::{Runner, Studiomdl};
-use bmod_core::{AlphaMode, CollisionMode, ConvertOptions, MaterialOptions, Scroll, ToolPaths};
+use bmod_core::{AlphaMode, Blank, Bodygroup, CollisionMode, ConvertOptions, MaterialOptions, Scroll, ToolPaths};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
@@ -135,6 +135,14 @@ struct MaterialRequest {
 }
 
 #[derive(Deserialize)]
+struct BodygroupRequest {
+    name: String,
+    parts: Vec<String>,
+    /// "none", "last" (shown by default) or "first" (hidden by default).
+    blank: String,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ConvertRequest {
     model: PathBuf,
@@ -144,6 +152,8 @@ struct ConvertRequest {
     surfaceprop: String,
     #[serde(default)]
     concave: bool,
+    #[serde(default)]
+    bodygroups: Vec<BodygroupRequest>,
 }
 
 #[derive(Serialize)]
@@ -155,6 +165,8 @@ struct MaterialSlotInfo {
 #[derive(Serialize)]
 struct ModelInfo {
     materials: Vec<MaterialSlotInfo>,
+    /// Same shape as a material slot: name and triangle count.
+    parts: Vec<MaterialSlotInfo>,
     triangles: usize,
 }
 
@@ -215,6 +227,11 @@ async fn inspect_model(app: AppHandle, path: PathBuf) -> Result<ModelInfo, Strin
                     .into_iter()
                     .map(|m| MaterialSlotInfo { name: m.name, triangles: m.triangles })
                     .collect(),
+                parts: info
+                    .parts
+                    .into_iter()
+                    .map(|p| MaterialSlotInfo { name: p.name, triangles: p.triangles })
+                    .collect(),
             })
             .map_err(|e| format!("{e:#}"))
     })
@@ -265,6 +282,19 @@ async fn convert(app: AppHandle, state: State<'_, AppState>, req: ConvertRequest
         scale: req.scale,
         surfaceprop: req.surfaceprop,
         collision: if req.concave { CollisionMode::Concave } else { CollisionMode::Convex },
+        bodygroups: req
+            .bodygroups
+            .into_iter()
+            .map(|g| Bodygroup {
+                name: g.name,
+                parts: g.parts,
+                blank: match g.blank.as_str() {
+                    "none" => Blank::None,
+                    "first" => Blank::First,
+                    _ => Blank::Last,
+                },
+            })
+            .collect(),
         output_root: settings.output_root(),
         model_dir: settings.model_dir.clone(),
         keep_sources: settings.keep_sources,

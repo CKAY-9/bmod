@@ -15,27 +15,63 @@ pub struct Mesh {
     pub tri_material: Vec<u32>,
     /// Material slot names, already sanitized (`[a-z0-9_]`) and unique.
     pub materials: Vec<String>,
+    /// Part (source-file object) of each triangle; indexes `parts`. Same length as `triangles`.
+    pub tri_part: Vec<u32>,
+    /// Part names, sanitized and unique like `materials`.
+    pub parts: Vec<String>,
+}
+
+/// Returns the index of `raw_name` (sanitized) in `names`, appending it if new.
+fn intern(names: &mut Vec<String>, raw_name: &str, fallback: &str) -> u32 {
+    let name = match crate::sanitize_name(raw_name) {
+        n if n.is_empty() => fallback.to_string(),
+        n => n,
+    };
+    match names.iter().position(|m| *m == name) {
+        Some(i) => i as u32,
+        None => {
+            names.push(name);
+            (names.len() - 1) as u32
+        }
+    }
+}
+
+/// Drops names whose count is zero and renumbers `ids` to match.
+fn prune(names: &mut Vec<String>, ids: &mut [u32]) {
+    let mut counts = vec![0usize; names.len()];
+    for &i in ids.iter() {
+        counts[i as usize] += 1;
+    }
+    let mut remap = vec![0u32; counts.len()];
+    let mut kept = Vec::new();
+    for (i, name) in std::mem::take(names).into_iter().enumerate() {
+        if counts[i] > 0 {
+            remap[i] = kept.len() as u32;
+            kept.push(name);
+        }
+    }
+    *names = kept;
+    for i in ids {
+        *i = remap[*i as usize];
+    }
 }
 
 impl Mesh {
     /// Returns the slot for a material name from the source file, creating it if new.
     pub fn material_slot(&mut self, raw_name: &str) -> u32 {
-        let name = match crate::sanitize_name(raw_name) {
-            n if n.is_empty() => "material".to_string(),
-            n => n,
-        };
-        match self.materials.iter().position(|m| *m == name) {
-            Some(i) => i as u32,
-            None => {
-                self.materials.push(name);
-                (self.materials.len() - 1) as u32
-            }
-        }
+        intern(&mut self.materials, raw_name, "material")
     }
 
-    pub fn push(&mut self, tri: [Vertex; 3], material: u32) {
+    /// Returns the part for an object name from the source file, creating it if new.
+    /// Objects whose names sanitize to the same string share one part.
+    pub fn part_slot(&mut self, raw_name: &str) -> u32 {
+        intern(&mut self.parts, raw_name, "part")
+    }
+
+    pub fn push(&mut self, tri: [Vertex; 3], material: u32, part: u32) {
         self.triangles.push(tri);
         self.tri_material.push(material);
+        self.tri_part.push(part);
     }
 
     /// Triangle count per material slot.
@@ -47,21 +83,31 @@ impl Mesh {
         counts
     }
 
-    /// Drops material slots that no triangle uses and renumbers the rest.
-    pub fn prune_unused_materials(&mut self) {
-        let counts = self.material_triangle_counts();
-        let mut remap = vec![0u32; counts.len()];
-        let mut kept = Vec::new();
-        for (i, name) in std::mem::take(&mut self.materials).into_iter().enumerate() {
-            if counts[i] > 0 {
-                remap[i] = kept.len() as u32;
-                kept.push(name);
+    /// Triangle count per part.
+    pub fn part_triangle_counts(&self) -> Vec<usize> {
+        let mut counts = vec![0; self.parts.len()];
+        for &p in &self.tri_part {
+            counts[p as usize] += 1;
+        }
+        counts
+    }
+
+    /// Drops material slots and parts that no triangle uses and renumbers the rest.
+    pub fn prune_unused(&mut self) {
+        prune(&mut self.materials, &mut self.tri_material);
+        prune(&mut self.parts, &mut self.tri_part);
+    }
+
+    /// The triangles of the given parts. Material and part lists are kept whole,
+    /// so indices (and the material names written to SMDs) stay the same.
+    pub fn subset(&self, parts: &[u32]) -> Mesh {
+        let mut out = Mesh { materials: self.materials.clone(), parts: self.parts.clone(), ..Default::default() };
+        for ((tri, &m), &p) in self.triangles.iter().zip(&self.tri_material).zip(&self.tri_part) {
+            if parts.contains(&p) {
+                out.push(*tri, m, p);
             }
         }
-        self.materials = kept;
-        for m in &mut self.tri_material {
-            *m = remap[*m as usize];
-        }
+        out
     }
 
     pub fn scale(&mut self, factor: f32) {

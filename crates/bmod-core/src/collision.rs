@@ -177,7 +177,7 @@ mod tests {
         triangles.extend(cuboid([18.0, 0.0, 0.0], [20.0, 20.0, 20.0]));
         triangles.extend(cuboid([0.0, 0.0, 0.0], [20.0, 2.0, 20.0]));
         triangles.extend(cuboid([0.0, 18.0, 0.0], [20.0, 20.0, 20.0]));
-        let mesh = Mesh { tri_material: vec![0; triangles.len()], triangles, materials: vec!["m".into()] };
+        let mesh = Mesh { tri_material: vec![0; triangles.len()], triangles, materials: vec!["m".into()], ..Default::default() };
 
         let pieces = convex_decomposition(&mesh);
         assert!(pieces.len() > 1, "expected several pieces, got {}", pieces.len());
