@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use glam::{Mat3, Mat4, Vec3};
 
 use crate::Logger;
-use crate::mesh::{Mesh, Vertex, smooth_normals};
+use crate::mesh::{Mesh, Vertex, smooth_normals, triangulate_polygon};
 
 fn y_up_to_source(v: Vec3) -> [f32; 3] {
     [v.x, -v.z, v.y]
@@ -117,8 +117,10 @@ fn load_gltf(path: &Path, log: Logger) -> Result<Mesh> {
 }
 
 fn load_obj(path: &Path, log: Logger) -> Result<Mesh> {
+    // tobj's own triangulation is a plain fan, which covers openings in concave
+    // n-gons, so faces are loaded as-is and ear-clipped below.
     let opts = tobj::LoadOptions {
-        triangulate: true,
+        triangulate: false,
         single_index: true,
         ..Default::default()
     };
@@ -140,10 +142,14 @@ fn load_obj(path: &Path, log: Logger) -> Result<Mesh> {
             None => mesh.material_slot("default"),
         };
         let positions: Vec<[f32; 3]> = m.positions.as_chunks::<3>().0.iter().map(|p| [p[0], p[1], p[2]]).collect();
+        if m.indices.iter().any(|&i| i as usize >= positions.len()) {
+            bail!("OBJ index out of range in object '{}'", model.name);
+        }
+        let indices = triangulate_faces(m, &positions);
         let normals: Vec<[f32; 3]> = if m.normals.len() == m.positions.len() {
             m.normals.as_chunks::<3>().0.iter().map(|n| [n[0], n[1], n[2]]).collect()
         } else {
-            smooth_normals(&positions, &m.indices)
+            smooth_normals(&positions, &indices)
         };
         let has_uvs = m.texcoords.len() / 2 == positions.len();
         missing_uvs |= !has_uvs;
@@ -158,10 +164,7 @@ fn load_obj(path: &Path, log: Logger) -> Result<Mesh> {
                 uv: if has_uvs { [m.texcoords[i * 2], m.texcoords[i * 2 + 1]] } else { [0.0, 0.0] },
             }
         };
-        for tri in m.indices.as_chunks::<3>().0 {
-            if tri.iter().any(|&i| i as usize >= positions.len()) {
-                bail!("OBJ index out of range in object '{}'", model.name);
-            }
+        for tri in indices.as_chunks::<3>().0 {
             mesh.push([vertex(tri[0]), vertex(tri[1]), vertex(tri[2])], material);
         }
     }
@@ -169,6 +172,29 @@ fn load_obj(path: &Path, log: Logger) -> Result<Mesh> {
         log("warning: some objects have no UV map; they will show a single texel of the texture");
     }
     Ok(mesh)
+}
+
+/// Triangle indices for an OBJ mesh loaded with `triangulate: false`.
+/// Faces with fewer than three corners (points, lines) are dropped.
+fn triangulate_faces(m: &tobj::Mesh, positions: &[[f32; 3]]) -> Vec<u32> {
+    if m.face_arities.is_empty() {
+        return m.indices.clone(); // all triangles already
+    }
+    let mut out = Vec::with_capacity(m.indices.len() * 2);
+    let mut start = 0;
+    for &arity in &m.face_arities {
+        let face = &m.indices[start..start + arity as usize];
+        start += arity as usize;
+        if face.len() == 3 {
+            out.extend_from_slice(face);
+            continue;
+        }
+        let corners: Vec<[f32; 3]> = face.iter().map(|&i| positions[i as usize]).collect();
+        for t in triangulate_polygon(&corners) {
+            out.extend(t.map(|k| face[k]));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -194,6 +220,29 @@ mod tests {
         // OBJ normal +Z (towards viewer) -> Source -Y.
         assert_eq!(mesh.triangles[0][0].normal, [0.0, -1.0, 0.0]);
         assert_eq!(mesh.materials, ["default"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn obj_concave_ngon_is_ear_clipped() {
+        let dir = std::env::temp_dir().join(format!("bmod-test-ngon-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("u.obj");
+        // A U-shaped 8-gon in the XY plane; a fan from corner 1 would cover the notch.
+        std::fs::write(
+            &path,
+            "v 0 0 0\nv 4 0 0\nv 4 4 0\nv 3 4 0\nv 3 1 0\nv 1 1 0\nv 1 4 0\nv 0 4 0\nf 1 2 3 4 5 6 7 8\nf 1 2 3\n",
+        )
+        .unwrap();
+        let mesh = load_model(&path, &|_| {}).unwrap();
+        assert_eq!(mesh.triangles.len(), 6 + 1);
+        // OBJ (x, y, 0) -> Source (x, 0, y): the notch centre is (2, _, 3).
+        for t in &mesh.triangles[..6] {
+            let [a, b, c] = t.map(|v| glam::Vec2::new(v.pos[0], v.pos[2]));
+            let p = glam::Vec2::new(2.0, 3.0);
+            let s = [(b - a).perp_dot(p - a), (c - b).perp_dot(p - b), (a - c).perp_dot(p - c)];
+            assert!(!(s.iter().all(|&x| x > 0.0) || s.iter().all(|&x| x < 0.0)), "notch covered by {t:?}");
+        }
         std::fs::remove_dir_all(dir).ok();
     }
 
