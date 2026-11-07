@@ -14,7 +14,7 @@ pub mod vmt;
 pub mod vtf;
 
 pub use convert::{
-    AlphaMode, ConvertOptions, ConvertOutput, MaterialOptions, ModelInfo, Scroll, convert, inspect_model,
+    AlphaMode, CollisionMode, ConvertOptions, ConvertOutput, MaterialOptions, ModelInfo, Scroll, convert, inspect_model,
 };
 
 /// Receives human-readable progress lines during a conversion.

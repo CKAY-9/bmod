@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use bmod_core::compiler::{Runner, Studiomdl};
-use bmod_core::{AlphaMode, ConvertOptions, MaterialOptions, Scroll};
+use bmod_core::{AlphaMode, CollisionMode, ConvertOptions, MaterialOptions, Scroll};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_opener::OpenerExt;
@@ -47,6 +47,8 @@ struct ConvertRequest {
     name: String,
     scale: f32,
     surfaceprop: String,
+    #[serde(default)]
+    concave: bool,
 }
 
 #[derive(Serialize)]
@@ -144,6 +146,7 @@ async fn convert(app: AppHandle, req: ConvertRequest) -> Result<ConvertResult, S
         name: req.name,
         scale: req.scale,
         surfaceprop: req.surfaceprop,
+        collision: if req.concave { CollisionMode::Concave } else { CollisionMode::Convex },
         output_root: output_root(),
     };
     tauri::async_runtime::spawn_blocking(move || {

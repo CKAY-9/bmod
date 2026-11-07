@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use bmod_core::convert::DEFAULT_SCALE;
-use bmod_core::{AlphaMode, ConvertOptions, MaterialOptions, Scroll, convert, inspect_model};
+use bmod_core::{AlphaMode, CollisionMode, ConvertOptions, MaterialOptions, Scroll, convert, inspect_model};
 
 const USAGE: &str = "\
 usage: bmod-cli <model> [texture] [options]
@@ -15,6 +15,7 @@ usage: bmod-cli <model> [texture] [options]
                           scroll a slot's texture (rate in widths/sec, angle in degrees)
   --name <name>           asset name (default: model file name)
   --scale <n>             units per model unit (default: 39.37)
+  --concave               concave collision that keeps holes open (cups, boxes)
   --list                  print the model's material slots and exit";
 
 fn main() -> ExitCode {
@@ -38,6 +39,7 @@ fn run() -> anyhow::Result<()> {
     let mut name = String::new();
     let mut scale = DEFAULT_SCALE;
     let mut list = false;
+    let mut collision = CollisionMode::Convex;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -57,6 +59,7 @@ fn run() -> anyhow::Result<()> {
             "--name" => name = value()?,
             "--scale" => scale = value()?.parse()?,
             "--list" => list = true,
+            "--concave" => collision = CollisionMode::Concave,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
@@ -102,6 +105,7 @@ fn run() -> anyhow::Result<()> {
         name,
         scale,
         surfaceprop: "default".into(),
+        collision,
         output_root: std::env::current_dir()?,
     };
     let out = convert(&opts, &|line| println!("{line}"))?;

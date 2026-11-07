@@ -27,6 +27,7 @@ cargo run -p bmod-cli -- model.glb --list            # show material slots
 cargo run -p bmod-cli -- model.glb texture.png       # one texture for every slot
 cargo run -p bmod-cli -- printer.glb --tex body=body.png --tex money=money.png \
     --scroll money=0.5:90 --name money_printer       # per-slot textures + scrolling
+cargo run -p bmod-cli -- cup.glb cup.png --concave   # collision that keeps the cup's mouth open
 ```
 
 Bundling installers (AppImage/deb/MSI) needs the Tauri CLI: `cargo install tauri-cli`, then `cargo tauri build`.
@@ -51,6 +52,11 @@ Scrolling applies to a whole material, so give the moving part its own material 
 
 Copy that folder into `garrysmod/addons/`. The prop then spawns as `models/bmod/<name>.mdl`.
 
+### Collision
+
+- **Convex** (default) wraps the whole model in one hull. It is cheap and stable, but it fills in holes: a cup gets an invisible lid.
+- **Concave** splits the model into up to 32 convex pieces (V-HACD) and compiles them with `$concave`. Openings, hollows and gaps stay open, so things can go inside a cup or box. A closed mesh inside the model, such as liquid in a cup, still counts as solid.
+
 ### Preparing the model in Blender
 
 - Use one object (join with Ctrl+J) and one UV map, with all transforms applied (Ctrl+A). Use one material per texture, up to 32. Material names become the slot names.
@@ -61,7 +67,7 @@ Copy that folder into `garrysmod/addons/`. The prop then spawns as `models/bmod/
 
 - Static props only: no bones, animations or LODs.
 - Textures can scroll but not flip through frames. There are no animated VTFs yet.
-- Collision is a single convex hull. Concave shapes such as tables collide as their "shrink-wrap".
+- Collision is either one convex hull or an automatic convex decomposition. You can't supply a custom collision mesh yet.
 - The texture is DXT1, or DXT5 when it has alpha, with full mipmaps. There are no normal maps yet.
 
 ## Layout

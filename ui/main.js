@@ -212,6 +212,7 @@ async function convert() {
         name: $("name").value,
         scale: parseFloat($("scale").value),
         surfaceprop: $("surfaceprop").value,
+        concave: $("collision").value === "concave",
       },
     });
     state.lastDir = res.dir;

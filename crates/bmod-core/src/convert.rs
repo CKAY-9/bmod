@@ -35,6 +35,16 @@ pub enum AlphaMode {
     Translucent,
 }
 
+/// How the physics model is built.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CollisionMode {
+    /// One convex hull around everything. Cheap, but fills in holes and hollows.
+    #[default]
+    Convex,
+    /// Several convex pieces (V-HACD) that keep openings such as a cup's mouth.
+    Concave,
+}
+
 /// UV scrolling via the `TextureScroll` material proxy.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Scroll {
@@ -65,6 +75,7 @@ pub struct ConvertOptions {
     /// Multiplier from model units to Source units (Blender metres -> 39.37).
     pub scale: f32,
     pub surfaceprop: String,
+    pub collision: CollisionMode,
     /// Directory in which the timestamped output folder is created.
     pub output_root: PathBuf,
 }
@@ -226,9 +237,22 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
     let ref_smd = format!("{name}_ref.smd");
     let phys_smd = format!("{name}_phys.smd");
     fs::write(src_dir.join(&ref_smd), smd::reference(&mesh))?;
-    let hull = collision::convex_hull(&mesh);
-    log(&format!("collision: convex hull with {} faces", hull.len()));
-    fs::write(src_dir.join(&phys_smd), smd::physics(&hull))?;
+    let concave_pieces = match opts.collision {
+        CollisionMode::Convex => {
+            let hull = collision::convex_hull(&mesh);
+            log(&format!("collision: convex hull with {} faces", hull.len()));
+            fs::write(src_dir.join(&phys_smd), smd::physics(&[hull]))?;
+            None
+        }
+        CollisionMode::Concave => {
+            log("collision: decomposing into convex pieces…");
+            let pieces = collision::convex_decomposition(&mesh);
+            let faces: usize = pieces.iter().map(Vec::len).sum();
+            log(&format!("collision: {} convex piece(s), {faces} faces", pieces.len()));
+            fs::write(src_dir.join(&phys_smd), smd::physics(&pieces))?;
+            Some(pieces.len())
+        }
+    };
 
     let model_path = format!("bmod/{name}.mdl");
     let qc_path = src_dir.join(format!("{name}.qc"));
@@ -240,6 +264,7 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
             reference_smd: &ref_smd,
             physics_smd: &phys_smd,
             surfaceprop: &surfaceprop,
+            concave_pieces,
         }),
     )?;
 
