@@ -5,7 +5,8 @@ use std::process::ExitCode;
 
 use bmod_core::convert::DEFAULT_SCALE;
 use bmod_core::{
-    AlphaMode, Blank, Bodygroup, CollisionMode, ConvertOptions, MaterialOptions, Scroll, convert, inspect_model,
+    AlphaMode, Blank, Bodygroup, CollisionMode, ConvertOptions, MaterialOptions, Scroll, TextureQuality, convert,
+    inspect_model, texcache,
 };
 
 const USAGE: &str = "\
@@ -25,6 +26,8 @@ usage: bmod-cli <model> [texture] [options]
   --model-dir <dir>       folder under models/ (default: bmod)
   --out <dir>             where to create the output folder (default: current directory)
   --no-sources            delete the generated src/ (.qc, .smd) after compiling
+  --fast-textures         much faster texture compression at somewhat lower quality
+  --no-cache              always encode textures, without reusing earlier results
   --list                  print the model's material slots and parts, and exit";
 
 fn main() -> ExitCode {
@@ -52,6 +55,8 @@ fn run() -> anyhow::Result<()> {
     let mut model_dir = String::new();
     let mut output_root = std::env::current_dir()?;
     let mut keep_sources = true;
+    let mut texture_quality = TextureQuality::High;
+    let mut use_cache = true;
     let mut bodygroups = Vec::new();
 
     let mut args = std::env::args().skip(1);
@@ -89,6 +94,8 @@ fn run() -> anyhow::Result<()> {
             "--model-dir" => model_dir = value()?,
             "--out" => output_root = value()?.into(),
             "--no-sources" => keep_sources = false,
+            "--fast-textures" => texture_quality = TextureQuality::Fast,
+            "--no-cache" => use_cache = false,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
@@ -145,6 +152,8 @@ fn run() -> anyhow::Result<()> {
         keep_sources,
         tools: Default::default(),
         output_root,
+        texture_quality,
+        texture_cache: use_cache.then(texcache::default_dir).flatten(),
     };
     let out = convert(&opts, &|line| println!("{line}"))?;
     println!("output: {}", out.dir.display());

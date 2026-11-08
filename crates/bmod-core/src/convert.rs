@@ -14,11 +14,15 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result, bail};
 
 use crate::compiler::{Studiomdl, ToolPaths};
-use crate::{Logger, collision, import, qc, sanitize_name, smd, vmt, vtf};
+use crate::mesh::Mesh;
+use crate::vtf::TextureQuality;
+use crate::{Logger, collision, import, qc, sanitize_name, smd, texcache, vmt, vtf};
 
 /// Triangle count above which we warn that the prop is heavy for GMod.
 const HIGH_POLY_WARNING: usize = 10_000;
@@ -26,6 +30,9 @@ const HIGH_POLY_WARNING: usize = 10_000;
 const MAX_MATERIALS: usize = 32;
 /// studiomdl's limit on body parts (MAXSTUDIOBODYPARTS), one of which is the base `$body`.
 const MAX_BODYGROUPS: usize = 31;
+/// Textures encoded at once. Each one in flight holds its decoded image and
+/// mips (about 90 MB at 4096x4096), and each encode is already multithreaded.
+const MAX_PARALLEL_TEXTURES: usize = 4;
 /// Name of the always-visible `$body`; bodygroups can't reuse it.
 const BASE_BODY: &str = "body";
 
@@ -117,6 +124,10 @@ pub struct ConvertOptions {
     /// Keep the generated `src/` (QC and SMD files) after a successful compile.
     pub keep_sources: bool,
     pub tools: ToolPaths,
+    pub texture_quality: TextureQuality,
+    /// Folder for reusing encoded textures across conversions (see [`texcache`]);
+    /// `None` encodes every texture afresh.
+    pub texture_cache: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -321,64 +332,44 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
     fs::create_dir_all(&mat_dir)?;
     log(&format!("writing to {}", dir.display()));
 
-    // --- Materials ---
-    // Slots sharing a texture file share one VTF, named after the first slot using it.
-    let mut vtf_for_texture: HashMap<PathBuf, String> = HashMap::new();
-    for (slot, m) in mesh.materials.iter().zip(&slot_opts) {
-        let key = fs::canonicalize(&m.texture).unwrap_or_else(|_| m.texture.clone());
-        let vtf_name = match vtf_for_texture.get(&key) {
-            Some(existing) => {
-                log(&format!("[{slot}] reusing texture {existing}.vtf"));
-                existing.clone()
-            }
-            None => {
-                let has_alpha = write_vtf(&m.texture, &mat_dir.join(format!("{slot}.vtf")), slot, log)?;
-                if has_alpha && m.alpha == AlphaMode::Opaque {
-                    log(&format!(
-                        "note: [{slot}] the texture has transparency; pick Cutout or Translucent to use it"
-                    ));
-                }
-                vtf_for_texture.insert(key, slot.clone());
-                slot.clone()
-            }
-        };
-        if let Some(s) = m.scroll.filter(|s| s.rate != 0.0) {
-            log(&format!("[{slot}] scrolling at {} per second, angle {}°", s.rate, s.angle));
-        }
-        fs::write(
-            mat_dir.join(format!("{slot}.vmt")),
-            vmt::generate(&vmt::VmtParams {
-                basetexture: &format!("{mat_rel}/{vtf_name}"),
-                alpha: m.alpha,
-                double_sided: m.double_sided,
-                scroll: m.scroll,
-            }),
-        )?;
+    let texture_settings = TextureSettings { quality: opts.texture_quality, cache: opts.texture_cache.as_deref() };
+    if opts.texture_quality == TextureQuality::Fast {
+        log("using fast texture compression");
     }
 
-    // --- Geometry ---
+    // --- Materials, geometry and collision ---
+    // These don't depend on each other (only studiomdl needs them all), so the
+    // textures and the collision model are built while the SMDs are written.
     let ref_smd = format!("{name}_ref.smd");
     let phys_smd = format!("{name}_phys.smd");
-    let reference_smd = if bodies.groups.is_empty() {
-        fs::write(src_dir.join(&ref_smd), smd::reference(&mesh))?;
-        Some(ref_smd.as_str())
-    } else if !bodies.base.is_empty() {
-        fs::write(src_dir.join(&ref_smd), smd::reference(&mesh.subset(&bodies.base)))?;
-        Some(ref_smd.as_str())
-    } else {
-        None
-    };
     let part_smd = |p: u32| format!("{name}_part_{}.smd", mesh.parts[p as usize]);
-    for (group, options) in &bodies.groups {
-        let labels: Vec<&str> = options
-            .iter()
-            .map(|o| o.map_or("(empty)", |p| mesh.parts[p as usize].as_str()))
-            .collect();
-        log(&format!("bodygroup {group}: {}", labels.join(", ")));
-        for &p in options.iter().flatten() {
-            fs::write(src_dir.join(part_smd(p)), smd::reference(&mesh.subset(&[p])))?;
+    let (reference_smd, concave_pieces) = std::thread::scope(|s| -> Result<_> {
+        let materials = s.spawn(|| write_materials(&mesh.materials, &slot_opts, &mat_dir, &mat_rel, &texture_settings, log));
+        let collision = s.spawn(|| write_collision(&mesh, &bodies, opts.collision, &src_dir.join(&phys_smd), log));
+
+        let reference_smd = if bodies.groups.is_empty() {
+            fs::write(src_dir.join(&ref_smd), smd::reference(&mesh))?;
+            Some(ref_smd.as_str())
+        } else if !bodies.base.is_empty() {
+            fs::write(src_dir.join(&ref_smd), smd::reference(&mesh.subset(&bodies.base)))?;
+            Some(ref_smd.as_str())
+        } else {
+            None
+        };
+        for (group, options) in &bodies.groups {
+            let labels: Vec<&str> = options
+                .iter()
+                .map(|o| o.map_or("(empty)", |p| mesh.parts[p as usize].as_str()))
+                .collect();
+            log(&format!("bodygroup {group}: {}", labels.join(", ")));
+            for &p in options.iter().flatten() {
+                fs::write(src_dir.join(part_smd(p)), smd::reference(&mesh.subset(&[p])))?;
+            }
         }
-    }
+
+        join(materials)?;
+        Ok((reference_smd, join(collision)?))
+    })?;
     let part_smds: Vec<Vec<Option<String>>> =
         bodies.groups.iter().map(|(_, options)| options.iter().map(|o| o.map(part_smd)).collect()).collect();
     let qc_bodygroups: Vec<qc::QcBodygroup> = bodies
@@ -387,33 +378,6 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
         .zip(&part_smds)
         .map(|((group, _), smds)| qc::QcBodygroup { name: group, options: smds.iter().map(Option::as_deref).collect() })
         .collect();
-
-    // Collision can't change with bodygroups; it follows what the prop spawns with.
-    let solid = match bodies.default_visible() {
-        _ if bodies.groups.is_empty() => None,
-        visible if visible.is_empty() => {
-            log("note: every part starts hidden, so the collision model covers all of them");
-            None
-        }
-        visible => Some(mesh.subset(&visible)),
-    };
-    let solid = solid.as_ref().unwrap_or(&mesh);
-    let concave_pieces = match opts.collision {
-        CollisionMode::Convex => {
-            let hull = collision::convex_hull(solid);
-            log(&format!("collision: convex hull with {} faces", hull.len()));
-            fs::write(src_dir.join(&phys_smd), smd::physics(&[hull]))?;
-            None
-        }
-        CollisionMode::Concave => {
-            log("collision: decomposing into convex pieces…");
-            let pieces = collision::convex_decomposition(solid);
-            let faces: usize = pieces.iter().map(Vec::len).sum();
-            log(&format!("collision: {} convex piece(s), {faces} faces", pieces.len()));
-            fs::write(src_dir.join(&phys_smd), smd::physics(&pieces))?;
-            Some(pieces.len())
-        }
-    };
 
     let model_path = format!("{model_dir}/{name}.mdl");
     let qc_path = src_dir.join(format!("{name}.qc"));
@@ -450,23 +414,182 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
     Ok(ConvertOutput { dir, mdl, model_path: format!("models/{model_path}") })
 }
 
-/// Encodes `texture` to `out`. Returns whether the texture has transparency.
-fn write_vtf(texture: &Path, out: &Path, slot: &str, log: Logger) -> Result<bool> {
+/// Waits for a scoped thread, re-raising its panic if it had one.
+fn join<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
+    handle.join().unwrap_or_else(|e| std::panic::resume_unwind(e))
+}
+
+/// Writes a VMT per material slot and a VTF per distinct texture file.
+/// Slots sharing a texture file share one VTF, named after the first slot using it.
+fn write_materials(
+    slots: &[String],
+    slot_opts: &[&MaterialOptions],
+    mat_dir: &Path,
+    mat_rel: &str,
+    textures: &TextureSettings,
+    log: Logger,
+) -> Result<()> {
+    let mut vtf_for_texture: HashMap<PathBuf, &str> = HashMap::new();
+    let mut vtf_names: Vec<&str> = Vec::with_capacity(slots.len());
+    let mut to_encode: Vec<usize> = Vec::new();
+    for (i, (slot, m)) in slots.iter().zip(slot_opts).enumerate() {
+        let key = fs::canonicalize(&m.texture).unwrap_or_else(|_| m.texture.clone());
+        match vtf_for_texture.get(&key) {
+            Some(&existing) => {
+                log(&format!("[{slot}] reusing texture {existing}.vtf"));
+                vtf_names.push(existing);
+            }
+            None => {
+                vtf_for_texture.insert(key, slot);
+                vtf_names.push(slot);
+                to_encode.push(i);
+            }
+        }
+    }
+
+    // Encode several textures at once; each encode is itself multithreaded, but
+    // decoding and building mips are not.
+    let next = AtomicUsize::new(0);
+    let results = Mutex::new(Vec::with_capacity(to_encode.len()));
+    std::thread::scope(|s| {
+        for _ in 0..to_encode.len().min(MAX_PARALLEL_TEXTURES) {
+            s.spawn(|| {
+                while let Some(&i) = to_encode.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let slot = &slots[i];
+                    let r = write_vtf(&slot_opts[i].texture, &mat_dir.join(format!("{slot}.vtf")), slot, textures, log);
+                    results.lock().unwrap().push((i, r));
+                }
+            });
+        }
+    });
+    let mut results = results.into_inner().unwrap();
+    results.sort_by_key(|&(i, _)| i);
+    for (i, has_alpha) in results {
+        if has_alpha? && slot_opts[i].alpha == AlphaMode::Opaque {
+            log(&format!(
+                "note: [{}] the texture has transparency; pick Cutout or Translucent to use it",
+                slots[i]
+            ));
+        }
+    }
+
+    for ((slot, m), vtf_name) in slots.iter().zip(slot_opts).zip(vtf_names) {
+        if let Some(s) = m.scroll.filter(|s| s.rate != 0.0) {
+            log(&format!("[{slot}] scrolling at {} per second, angle {}°", s.rate, s.angle));
+        }
+        fs::write(
+            mat_dir.join(format!("{slot}.vmt")),
+            vmt::generate(&vmt::VmtParams {
+                basetexture: &format!("{mat_rel}/{vtf_name}"),
+                alpha: m.alpha,
+                double_sided: m.double_sided,
+                scroll: m.scroll,
+            }),
+        )?;
+    }
+    Ok(())
+}
+
+/// Writes the physics SMD. Returns the number of convex pieces for a concave model.
+fn write_collision(
+    mesh: &Mesh,
+    bodies: &BodyLayout,
+    mode: CollisionMode,
+    path: &Path,
+    log: Logger,
+) -> Result<Option<usize>> {
+    // Collision can't change with bodygroups; it follows what the prop spawns with.
+    let solid = match bodies.default_visible() {
+        _ if bodies.groups.is_empty() => None,
+        visible if visible.is_empty() => {
+            log("note: every part starts hidden, so the collision model covers all of them");
+            None
+        }
+        visible => Some(mesh.subset(&visible)),
+    };
+    let solid = solid.as_ref().unwrap_or(mesh);
+    Ok(match mode {
+        CollisionMode::Convex => {
+            let hull = collision::convex_hull(solid);
+            log(&format!("collision: convex hull with {} faces", hull.len()));
+            fs::write(path, smd::physics(&[hull]))?;
+            None
+        }
+        CollisionMode::Concave => {
+            log("collision: decomposing into convex pieces…");
+            let pieces = collision::convex_decomposition(solid);
+            let faces: usize = pieces.iter().map(Vec::len).sum();
+            log(&format!("collision: {} convex piece(s), {faces} faces", pieces.len()));
+            fs::write(path, smd::physics(&pieces))?;
+            Some(pieces.len())
+        }
+    })
+}
+
+struct TextureSettings<'a> {
+    quality: TextureQuality,
+    cache: Option<&'a Path>,
+}
+
+/// Encodes `texture` to `out`, or copies a cached encoding of the same image.
+/// Returns whether the texture has transparency.
+fn write_vtf(texture: &Path, out: &Path, slot: &str, settings: &TextureSettings, log: Logger) -> Result<bool> {
     log(&format!("[{slot}] loading texture {}", texture.display()));
-    let img = image::open(texture).with_context(|| format!("failed to read texture {}", texture.display()))?;
-    let encoded = vtf::encode(&img);
-    if let Some((w, h)) = encoded.resized_from {
+    let read_err = || format!("failed to read texture {}", texture.display());
+    let source = fs::read(texture).with_context(read_err)?;
+    // Decode by extension like `image::open`, sniffing the contents only when it is unknown.
+    let reader = || -> Result<image::ImageReader<std::io::Cursor<&[u8]>>> {
+        let reader = image::ImageReader::new(std::io::Cursor::new(source.as_slice()));
+        Ok(match image::ImageFormat::from_path(texture) {
+            Ok(format) => image::ImageReader::with_format(reader.into_inner(), format),
+            Err(_) => reader.with_guessed_format()?,
+        })
+    };
+    let cache = settings.cache.map(|dir| (dir, texcache::key(&source, settings.quality)));
+
+    let cached = cache
+        .as_ref()
+        .and_then(|(dir, key)| texcache::get(dir, key))
+        .and_then(|bytes| vtf::read_info(&bytes).map(|info| (bytes, info)));
+    let (bytes, info, resized_from, from_cache) = match cached {
+        Some((bytes, info)) => {
+            let source_size = reader().ok().and_then(|r| r.into_dimensions().ok());
+            let resized_from = source_size.filter(|&size| size != (info.width, info.height));
+            (bytes, info, resized_from, true)
+        }
+        None => {
+            let img = reader().and_then(|r| Ok(r.decode()?)).with_context(read_err)?;
+            let encoded = vtf::encode(&img, settings.quality);
+            let info = vtf::VtfInfo {
+                width: encoded.width,
+                height: encoded.height,
+                format: encoded.format,
+                mip_count: encoded.mip_count,
+            };
+            if let Some((dir, key)) = &cache
+                && let Err(e) = texcache::put(dir, key, &encoded.bytes)
+            {
+                log(&format!("warning: [{slot}] could not save the texture to the cache: {e}"));
+            }
+            (encoded.bytes, info, encoded.resized_from, false)
+        }
+    };
+    if let Some((w, h)) = resized_from {
         log(&format!(
             "warning: [{slot}] texture resized from {w}x{h} to {}x{} (Source needs power-of-two sizes)",
-            encoded.width, encoded.height
+            info.width, info.height
         ));
     }
     log(&format!(
-        "[{slot}] texture: {}x{} {:?}, {} mip levels",
-        encoded.width, encoded.height, encoded.format, encoded.mip_count
+        "[{slot}] texture: {}x{} {:?}, {} mip levels{}",
+        info.width,
+        info.height,
+        info.format,
+        info.mip_count,
+        if from_cache { " (reused from cache)" } else { "" }
     ));
-    fs::write(out, &encoded.bytes).with_context(|| format!("failed to write {}", out.display()))?;
-    Ok(encoded.format == vtf::VtfFormat::Dxt5)
+    fs::write(out, &bytes).with_context(|| format!("failed to write {}", out.display()))?;
+    Ok(info.format == vtf::VtfFormat::Dxt5)
 }
 
 const GAMEINFO: &str = "\"GameInfo\"\n{\n\tgame \"BMod\"\n\tFileSystem\n\t{\n\t\tSteamAppId 4000\n\t\tSearchPaths\n\t\t{\n\t\t\tGame |gameinfo_path|.\n\t\t}\n\t}\n}\n";

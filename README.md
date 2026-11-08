@@ -36,7 +36,8 @@ cargo run -p bmod-cli -- printer.glb --tex body=body.png --tex money=money.png \
 cargo run -p bmod-cli -- cup.glb cup.png --concave   # collision that keeps the cup's mouth open
 cargo run -p bmod-cli -- printer.glb body.png --group screen=screen      # screen part can be switched off
 cargo run -p bmod-cli -- hat.glb hat.png --group hat=cap,tophat:hidden   # spawns bare; pick a cap or top hat
-cargo run -p bmod-cli -- --help                      # all options (--out, --model-dir, --no-sources, …)
+cargo run -p bmod-cli -- model.glb texture.png --fast-textures  # quicker, slightly lower-quality textures
+cargo run -p bmod-cli -- --help                      # all options (--out, --model-dir, --no-sources, --no-cache, …)
 ```
 
 Bundling installers (AppImage/deb/MSI) needs the Tauri CLI: `cargo install tauri-cli`, then `cargo tauri build`.
@@ -82,12 +83,28 @@ The gear icon opens global settings, saved in BMod's config directory (for examp
 - **Model folder:** replaces `bmod` in `models/bmod/` and `materials/models/bmod/`.
 - **Keep source files:** keeps the generated `src/` folder. Turn it off for cleaner addons.
 - **Open the export folder after converting.**
+- **Fast texture compression:** encodes large textures roughly 10x faster at slightly lower quality (more visible blockiness on smooth gradients). Worth turning on while iterating; turn it off for the final export.
 - **Defaults** for scale and collision on new conversions.
 - **Tools:** paths to `studiomdl.exe` and Wine when auto-detection fails.
+- **Texture cache:** shows where cached textures live and how much space they use, with buttons to open the folder or clear it (see below).
 
 <div align="center">
     <img src="./screenshots/settings.png" height=400 />
 </div>
+
+### Texture cache
+
+Encoding a large texture takes a few seconds, so BMod keeps a copy of every texture it encodes and reuses it when you convert again with the same image (the log says "reused from cache"). Entries are matched by the image's contents, so editing a texture, even under the same file name, re-encodes it.
+
+The cache lives in your user cache folder:
+
+| OS | Location |
+|---|---|
+| Linux | `~/.cache/bmod/textures` |
+| Windows | `%LOCALAPPDATA%\bmod\cache\textures` |
+| macOS | `~/Library/Caches/bmod/textures` |
+
+It is capped at 1 GB; the least recently used textures are deleted first. To free the space, use **Clear cache** in Settings or delete the folder. Either is safe: textures are just encoded again on the next conversion. The CLI uses the same cache; pass `--no-cache` to skip it.
 
 ### Collision
 
