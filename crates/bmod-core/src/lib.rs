@@ -10,10 +10,12 @@ pub mod import;
 pub mod mesh;
 pub mod qc;
 pub mod smd;
+pub mod texcache;
 pub mod vmt;
 pub mod vtf;
 
 pub use compiler::ToolPaths;
+pub use vtf::TextureQuality;
 pub use convert::{
     AlphaMode, Blank, Bodygroup, CollisionMode, ConvertOptions, ConvertOutput, MaterialOptions, ModelInfo, ModelPart, Scroll,
     convert, inspect_model,

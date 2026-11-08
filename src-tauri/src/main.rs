@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use bmod_core::compiler::{Runner, Studiomdl};
-use bmod_core::{AlphaMode, Blank, Bodygroup, CollisionMode, ConvertOptions, MaterialOptions, Scroll, ToolPaths};
+use bmod_core::{AlphaMode, Blank, Bodygroup, CollisionMode, ConvertOptions, MaterialOptions, Scroll, TextureQuality, ToolPaths};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
@@ -21,6 +21,8 @@ struct Settings {
     model_dir: String,
     keep_sources: bool,
     open_after_convert: bool,
+    /// Range-fit DXT compression: much faster, somewhat lower quality.
+    fast_textures: bool,
     default_scale: f32,
     default_collision: String,
     studiomdl_path: String,
@@ -34,6 +36,7 @@ impl Default for Settings {
             model_dir: bmod_core::convert::DEFAULT_MODEL_DIR.into(),
             keep_sources: true,
             open_after_convert: false,
+            fast_textures: false,
             default_scale: bmod_core::convert::DEFAULT_SCALE,
             default_collision: "convex".into(),
             studiomdl_path: String::new(),
@@ -299,6 +302,8 @@ async fn convert(app: AppHandle, state: State<'_, AppState>, req: ConvertRequest
         model_dir: settings.model_dir.clone(),
         keep_sources: settings.keep_sources,
         tools: settings.tools(),
+        texture_quality: if settings.fast_textures { TextureQuality::Fast } else { TextureQuality::High },
+        texture_cache: bmod_core::texcache::default_dir(),
     };
     tauri::async_runtime::spawn_blocking(move || {
         let log = |line: &str| {
@@ -310,6 +315,58 @@ async fn convert(app: AppHandle, state: State<'_, AppState>, req: ConvertRequest
     })
     .await
     .map_err(|e| format!("conversion task crashed: {e}"))?
+}
+
+/// Where encoded textures are cached and how much is in there.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TextureCacheInfo {
+    /// `None` if there is no per-user cache directory, so caching is off.
+    path: Option<String>,
+    entries: usize,
+    bytes: u64,
+    limit_bytes: u64,
+}
+
+fn texture_cache_info_at(dir: Option<&Path>) -> Result<TextureCacheInfo, String> {
+    let usage = match dir {
+        Some(dir) => bmod_core::texcache::usage(dir).map_err(|e| format!("failed to read {}: {e}", dir.display()))?,
+        None => Default::default(),
+    };
+    Ok(TextureCacheInfo {
+        path: dir.map(|d| d.display().to_string()),
+        entries: usage.entries,
+        bytes: usage.bytes,
+        limit_bytes: bmod_core::texcache::MAX_BYTES,
+    })
+}
+
+#[tauri::command]
+fn texture_cache_info() -> Result<TextureCacheInfo, String> {
+    texture_cache_info_at(bmod_core::texcache::default_dir().as_deref())
+}
+
+/// Deletes every cached texture; returns the (now empty) cache info.
+#[tauri::command]
+fn clear_texture_cache(app: AppHandle) -> Result<TextureCacheInfo, String> {
+    let dir = bmod_core::texcache::default_dir();
+    if let Some(dir) = &dir {
+        let removed =
+            bmod_core::texcache::clear(dir).map_err(|e| format!("failed to clear {}: {e}", dir.display()))?;
+        let _ = app.emit(
+            LOG_EVENT,
+            format!("cleared texture cache: {} texture(s), {:.1} MB", removed.entries, removed.bytes as f64 / 1e6),
+        );
+    }
+    texture_cache_info_at(dir.as_deref())
+}
+
+/// Opens the texture cache folder, creating it if no texture has been cached yet.
+#[tauri::command]
+fn open_texture_cache(app: AppHandle) -> Result<(), String> {
+    let dir = bmod_core::texcache::default_dir().ok_or("there is no texture cache on this system")?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
+    app.opener().open_path(dir.display().to_string(), None::<&str>).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -332,7 +389,10 @@ fn main() {
             convert,
             open_folder,
             get_settings,
-            save_settings
+            save_settings,
+            texture_cache_info,
+            clear_texture_cache,
+            open_texture_cache
         ])
         .run(tauri::generate_context!())
         .expect("error while running BMod");

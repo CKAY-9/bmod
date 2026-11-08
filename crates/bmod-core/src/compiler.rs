@@ -10,6 +10,8 @@
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
@@ -100,15 +102,50 @@ impl Studiomdl {
             log("running studiomdl under Wine (the first run sets up a Wine prefix and can take a minute)");
         }
         let mut child = cmd.spawn().context("failed to start studiomdl")?;
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
+
+        // Wine's background services (services.exe, winedevice, ...) inherit the
+        // pipes and keep them open for seconds after studiomdl exits, or forever
+        // with a persistent wineserver. So stop at process exit, not at EOF; the
+        // reader threads are left to finish on their own.
+        let (tx, rx) = mpsc::channel::<(bool, String)>();
+        let readers: [(Box<dyn Read + Send>, bool); 2] =
+            [(Box::new(child.stdout.take().unwrap()), true), (Box::new(child.stderr.take().unwrap()), false)];
+        for (stream, is_stdout) in readers {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                    if tx.send((is_stdout, line)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(tx);
 
         let mut errors = Vec::new();
-        std::thread::scope(|s| {
-            s.spawn(|| pump(stderr, log, &mut Vec::new()));
-            pump(stdout, log, &mut errors);
-        });
-        let status = child.wait().context("failed to wait for studiomdl")?;
+        let mut handle = |(is_stdout, line): (bool, String)| {
+            handle_line(&line, log, if is_stdout { Some(&mut errors) } else { None })
+        };
+        let status = loop {
+            match rx.recv_timeout(POLL) {
+                Ok(msg) => handle(msg),
+                Err(RecvTimeoutError::Disconnected) => break child.wait(),
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+            if let Some(status) = child.try_wait().transpose() {
+                break status;
+            }
+        }
+        .context("failed to wait for studiomdl")?;
+        // Pick up whatever studiomdl wrote just before exiting.
+        let deadline = Instant::now() + DRAIN_LIMIT;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            match rx.recv_timeout(left.min(DRAIN_IDLE)) {
+                Ok(msg) => handle(msg),
+                Err(_) => break,
+            }
+        }
+        drop(handle);
 
         if let Some(err) = errors.last() {
             bail!("studiomdl failed: {err}");
@@ -129,18 +166,25 @@ impl Studiomdl {
     }
 }
 
-/// Forwards useful output lines to `log`, collecting error lines.
-fn pump(stream: impl Read, log: Logger, errors: &mut Vec<String>) {
-    for line in BufReader::new(stream).lines().map_while(Result::ok) {
-        let line = line.trim_end();
-        if line.is_empty() || is_wine_noise(line) {
-            continue;
-        }
-        if line.contains("ERROR") {
-            errors.push(line.to_string());
-        }
-        log(line);
+/// How often to check whether studiomdl has exited while waiting for output.
+const POLL: Duration = Duration::from_millis(50);
+/// After exit, stop draining output once it has been quiet this long...
+const DRAIN_IDLE: Duration = Duration::from_millis(200);
+/// ...or after this long in total.
+const DRAIN_LIMIT: Duration = Duration::from_secs(1);
+
+/// Forwards a useful output line to `log`, collecting error lines into `errors` if given.
+fn handle_line(line: &str, log: Logger, errors: Option<&mut Vec<String>>) {
+    let line = line.trim_end();
+    if line.is_empty() || is_wine_noise(line) {
+        return;
     }
+    if let Some(errors) = errors
+        && line.contains("ERROR")
+    {
+        errors.push(line.to_string());
+    }
+    log(line);
 }
 
 fn is_wine_noise(line: &str) -> bool {

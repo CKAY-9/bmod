@@ -376,6 +376,7 @@ function defaultSettings() {
     modelDir: "bmod",
     keepSources: true,
     openAfterConvert: false,
+    fastTextures: false,
     defaultScale: state.env?.defaultScale ?? 39.37,
     defaultCollision: "convex",
     studiomdlPath: "",
@@ -388,6 +389,7 @@ function fillSettingsForm(s) {
   $("set-model-dir").value = s.modelDir;
   $("set-keep-sources").checked = s.keepSources;
   $("set-open-after").checked = s.openAfterConvert;
+  $("set-fast-textures").checked = s.fastTextures;
   $("set-default-scale").value = s.defaultScale;
   $("set-default-collision").value = s.defaultCollision;
   $("set-studiomdl").value = s.studiomdlPath;
@@ -401,6 +403,7 @@ function readSettingsForm() {
     modelDir: $("set-model-dir").value,
     keepSources: $("set-keep-sources").checked,
     openAfterConvert: $("set-open-after").checked,
+    fastTextures: $("set-fast-textures").checked,
     defaultScale: parseFloat($("set-default-scale").value),
     defaultCollision: $("set-default-collision").value,
     studiomdlPath: $("set-studiomdl").value,
@@ -414,8 +417,47 @@ function updateModelPreview() {
   $("set-model-preview").textContent = `Spawns as models/${dir}/${name}.mdl`;
 }
 
+function formatBytes(bytes) {
+  if (bytes < 1e6) return `${Math.round(bytes / 1e3)} KB`;
+  if (bytes < 1e9) return `${(bytes / 1e6).toFixed(1)} MB`;
+  return `${(bytes / 1e9).toFixed(2)} GB`;
+}
+
+function showCacheInfo(info) {
+  const available = info.path != null;
+  $("cache-path").textContent = available ? info.path : "Unavailable: no per-user cache folder on this system";
+  $("cache-limit").textContent = formatBytes(info.limitBytes);
+  $("cache-usage").textContent = !available
+    ? "Textures are encoded on every conversion."
+    : info.entries === 0
+      ? "Empty"
+      : `${info.entries} texture${info.entries === 1 ? "" : "s"}, ${formatBytes(info.bytes)}`;
+  $("cache-open").disabled = !available;
+  // Clearing mid-conversion is harmless but would throw away what it is about to save.
+  $("cache-clear").disabled = !available || info.entries === 0 || busy();
+}
+
+async function refreshCacheInfo() {
+  try {
+    showCacheInfo(await invoke("texture_cache_info"));
+  } catch (err) {
+    $("cache-usage").textContent = String(err);
+  }
+}
+
+async function clearCache() {
+  $("cache-clear").disabled = true;
+  try {
+    showCacheInfo(await invoke("clear_texture_cache"));
+  } catch (err) {
+    $("cache-usage").textContent = String(err);
+    $("cache-clear").disabled = false;
+  }
+}
+
 function openSettings() {
   if (!state.settings) return;
+  refreshCacheInfo();
   fillSettingsForm(state.settings);
   $("set-output-dir").placeholder = state.env?.defaultOutputRoot || "";
   $("set-wine-field").hidden = !!state.env?.isWindows;
@@ -467,6 +509,10 @@ function initSettings() {
   $("settings-cancel").addEventListener("click", () => dialog.close());
   $("settings-reset").addEventListener("click", () => fillSettingsForm(defaultSettings()));
   $("set-model-dir").addEventListener("input", updateModelPreview);
+  $("cache-clear").addEventListener("click", clearCache);
+  $("cache-open").addEventListener("click", () =>
+    invoke("open_texture_cache").catch((err) => ($("cache-usage").textContent = String(err))),
+  );
   // Clicking the backdrop (the dialog element itself, outside the form) closes it.
   dialog.addEventListener("click", (e) => {
     if (e.target === dialog) dialog.close();

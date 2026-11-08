@@ -126,6 +126,7 @@
         </label>
         <label class="check"><input type="checkbox" id="set-keep-sources"><span>Keep source files (<code>src/</code> with the .qc and .smd files)</span></label>
         <label class="check"><input type="checkbox" id="set-open-after"><span>Open the export folder after converting</span></label>
+        <label class="check"><input type="checkbox" id="set-fast-textures"><span>Fast texture compression (much quicker for large textures, slightly lower quality)</span></label>
       </fieldset>
 
       <fieldset>
@@ -160,6 +161,25 @@
             <input id="set-wine" type="text" spellcheck="false" autocomplete="off" placeholder="Find automatically in PATH">
             <button type="button" class="secondary" data-browse="set-wine" data-kind="file">Browse…</button>
           </div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Texture cache</legend>
+        <p class="cache-about muted">
+          BMod keeps a copy of every texture it encodes, so converting again with an unchanged texture skips the slow encoding step.
+          The oldest entries are deleted once the cache grows past <span id="cache-limit">1 GB</span>.
+          Clearing it is safe: textures are simply encoded again next time.
+        </p>
+        <div class="field">
+          <span>Location</span>
+          <code id="cache-path" class="cache-path"></code>
+        </div>
+        <div class="cache-row">
+          <span id="cache-usage" class="muted" aria-live="polite"></span>
+          <span class="spacer"></span>
+          <button type="button" class="secondary" id="cache-open">Open folder</button>
+          <button type="button" class="secondary" id="cache-clear">Clear cache</button>
         </div>
       </fieldset>
 

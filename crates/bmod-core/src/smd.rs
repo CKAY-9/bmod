@@ -7,27 +7,45 @@ use crate::mesh::Mesh;
 
 const HEADER: &str = "version 1\nnodes\n0 \"root\" -1\nend\nskeleton\ntime 0\n0 0 0 0 0 0 0\nend\ntriangles\n";
 
-fn f(v: f32) -> String {
-    // Avoid "-0.000000" noise in the output.
-    let v = if v == 0.0 { 0.0 } else { v };
-    format!("{v:.6}")
+/// Appends `v` as `{:.6}` would, except that zero is never written as "-0.000000".
+///
+/// Formats through integers to skip the general float formatter, which is most
+/// of the time spent writing a large SMD.
+fn push_f(out: &mut String, v: f32) {
+    // An f32 has 24 significant bits and 10^6 needs 20, so this product is exact
+    // in f64 and rounding it is the same as rounding the decimal expansion.
+    let scaled = (v as f64 * 1e6).round_ties_even();
+    if scaled.is_nan() || scaled.abs() >= 1e15 {
+        let _ = write!(out, "{:.6}", v + 0.0); // + 0.0 turns -0.0 into 0.0
+        return;
+    }
+    let n = scaled as i64;
+    if v.is_sign_negative() && v != 0.0 {
+        out.push('-'); // also for values that round to zero, like `{:.6}`
+    }
+    let n = n.unsigned_abs();
+    let _ = write!(out, "{}.{:06}", n / 1_000_000, n % 1_000_000);
+}
+
+/// Appends one SMD vertex line for the single bone `0`.
+fn push_vertex(out: &mut String, pos: [f32; 3], normal: [f32; 3], uv: [f32; 2]) {
+    out.push('0');
+    for c in pos.into_iter().chain(normal).chain(uv) {
+        out.push(' ');
+        push_f(out, c);
+    }
+    out.push('\n');
 }
 
 /// Reference (visible) mesh; each triangle names its own material slot.
 pub fn reference(mesh: &Mesh) -> String {
-    let mut out = String::with_capacity(HEADER.len() + mesh.triangles.len() * 200);
+    let mut out = String::with_capacity(HEADER.len() + mesh.triangles.len() * 250);
     out.push_str(HEADER);
     for (tri, &mat) in mesh.triangles.iter().zip(&mesh.tri_material) {
         out.push_str(&mesh.materials[mat as usize]);
         out.push('\n');
         for v in tri {
-            let _ = writeln!(
-                out,
-                "0 {} {} {} {} {} {} {} {}",
-                f(v.pos[0]), f(v.pos[1]), f(v.pos[2]),
-                f(v.normal[0]), f(v.normal[1]), f(v.normal[2]),
-                f(v.uv[0]), f(v.uv[1]),
-            );
+            push_vertex(&mut out, v.pos, v.normal, v.uv);
         }
     }
     out.push_str("end\n");
@@ -51,11 +69,12 @@ pub fn physics(pieces: &[Vec<Triangle>]) -> String {
             out.push_str("phys\n");
             for &p in tri {
                 let n = (glam::Vec3::from(p) - centre).try_normalize().unwrap_or(glam::Vec3::Z);
-                let _ = writeln!(
-                    out,
-                    "0 {} {} {} {} {} {} 0 0",
-                    f(p[0]), f(p[1]), f(p[2]), f(n.x), f(n.y), f(n.z),
-                );
+                out.push('0');
+                for c in p.into_iter().chain(n.to_array()) {
+                    out.push(' ');
+                    push_f(&mut out, c);
+                }
+                out.push_str(" 0 0\n");
             }
         }
     }
@@ -67,6 +86,42 @@ pub fn physics(pieces: &[Vec<Triangle>]) -> String {
 mod tests {
     use super::*;
     use crate::mesh::Vertex;
+
+    fn check_f(v: f32) {
+        let mut s = String::new();
+        push_f(&mut s, v);
+        let expected = format!("{:.6}", if v == 0.0 { 0.0 } else { v });
+        assert_eq!(s, expected, "for {v:e} ({:#x})", v.to_bits());
+    }
+
+    #[test]
+    fn float_formatting_matches_std() {
+        let special = [
+            0.0, -0.0, 1.0, -1.0, 0.5, 1e-7, -1e-7, 4e-7, 5e-7, 6e-7, -5e-7, 0.0078125, -0.0078125,
+            1.5e-6, 2.5e-6, 0.123_456_5, 39.37, -1234.5678, 99_999.99, 1e8, -3e9, 1e20, f32::MAX, f32::MIN_POSITIVE,
+        ];
+        special.into_iter().for_each(check_f);
+        // Exact ties at the 7th decimal: odd multiples of 2^-7 (= 0.0078125 = 15625e-6 / 2).
+        for k in (1..2000).step_by(2) {
+            check_f(k as f32 / 128.0);
+            check_f(-(k as f32) / 128.0);
+        }
+        // A broad sweep of bit patterns across the useful range.
+        let mut x: u32 = 0x9E37_79B9;
+        for _ in 0..2_000_000 {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            let v = f32::from_bits(x);
+            if v.is_finite() && v.abs() < 1e12 {
+                check_f(v);
+            }
+            // And values typical of models, normals and UVs.
+            for range in [1.0, 100.0, 10_000.0] {
+                check_f((x as f32 / u32::MAX as f32 - 0.5) * range);
+            }
+        }
+    }
 
     #[test]
     fn physics_corners_share_one_normal_per_piece() {

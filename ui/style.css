@@ -297,6 +297,10 @@ dialog#settings::backdrop { background: rgba(10, 12, 16, 0.5); }
 .path-row { display: flex; gap: 8px; }
 .path-row input { flex: 1; min-width: 0; }
 .settings-error { margin: 0; padding: 8px 12px; border-left: 3px solid var(--bad); border-radius: 4px; background: var(--bg); color: var(--bad); font-size: 13px; }
+.cache-about { margin: 0; }
+.cache-path { display: block; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); overflow-wrap: anywhere; user-select: all; }
+.cache-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.cache-row .spacer { flex: 1; }
 .settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .settings-actions .spacer { flex: 1; }
 .settings-actions button.primary { padding: 8px 22px; }
