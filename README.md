@@ -6,6 +6,10 @@
 
 Blender-to-Garry's Mod, or BMod, is a simple GUI app for converting modern model files and an unwrapped texture into a Garry's Mod static prop: `.mdl` plus `.vtf`/`.vmt`.
 
+<div align="center">
+    <img src="./screenshots/top.png" height=400 />
+</div>
+
 ## Requirements
 
 - **Rust** (stable) and the [Tauri 2 system dependencies](https://v2.tauri.app/start/prerequisites/). On Linux these are `webkit2gtk-4.1` and `gtk3`.
@@ -52,6 +56,10 @@ materials/models/bmod/<name>/<slot>.vtf   one per distinct texture file
 src/            generated .qc and .smd files, kept for reference
 ```
 
+<div align="center">
+    <img src="./screenshots/export.png" height=400 />
+</div>
+
 ### Bodygroups
 
 Each object in the model file (each Blender object) is a **part**. By default every part is always shown. Tick **Toggleable** on a part to put it in a bodygroup, which you can switch in-game from the context menu (**Bodygroups**) or with `Entity:SetBodygroup`.
@@ -76,6 +84,10 @@ The gear icon opens global settings, saved in BMod's config directory (for examp
 - **Open the export folder after converting.**
 - **Defaults** for scale and collision on new conversions.
 - **Tools:** paths to `studiomdl.exe` and Wine when auto-detection fails.
+
+<div align="center">
+    <img src="./screenshots/settings.png" height=400 />
+</div>
 
 ### Collision
 
