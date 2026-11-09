@@ -110,6 +110,28 @@ impl Mesh {
         out
     }
 
+    /// Splits the triangles into `pieces` meshes of nearly equal size (fewer if
+    /// there are fewer triangles). Triangles are grouped by material first, so
+    /// each material lands in as few pieces as possible; within a material they
+    /// keep their file order, which keeps neighbouring triangles together.
+    pub fn split(&self, pieces: usize) -> Vec<Mesh> {
+        let mut order: Vec<usize> = (0..self.triangles.len()).collect();
+        order.sort_by_key(|&i| self.tri_material[i]); // stable
+        let pieces = pieces.clamp(1, order.len().max(1));
+        let mut start = 0;
+        (0..pieces)
+            .map(|k| {
+                let end = order.len() * (k + 1) / pieces;
+                let mut out = Mesh { materials: self.materials.clone(), parts: self.parts.clone(), ..Default::default() };
+                for &i in &order[start..end] {
+                    out.push(self.triangles[i], self.tri_material[i], self.tri_part[i]);
+                }
+                start = end;
+                out
+            })
+            .collect()
+    }
+
     pub fn scale(&mut self, factor: f32) {
         for tri in &mut self.triangles {
             for v in tri {
@@ -257,6 +279,24 @@ mod tests {
                 (b - a).perp_dot(c - a)
             })
             .collect()
+    }
+
+    #[test]
+    fn splits_evenly_grouped_by_material() {
+        let v = |x: f32| Vertex { pos: [x, 0.0, 0.0], normal: [0.0, 0.0, 1.0], uv: [0.0; 2] };
+        let mut mesh = Mesh::default();
+        let (a, b) = (mesh.material_slot("a"), mesh.material_slot("b"));
+        for i in 0..10 {
+            mesh.push([v(i as f32); 3], if i % 2 == 0 { a } else { b }, 0);
+        }
+        let pieces = mesh.split(3);
+        assert_eq!(pieces.iter().map(|p| p.triangles.len()).collect::<Vec<_>>(), [3, 3, 4]);
+        // Material a's triangles (0, 2, 4, 6, 8) come first, in file order.
+        let xs: Vec<f32> = pieces.iter().flat_map(|p| p.triangles.iter().map(|t| t[0].pos[0])).collect();
+        assert_eq!(xs, [0.0, 2.0, 4.0, 6.0, 8.0, 1.0, 3.0, 5.0, 7.0, 9.0]);
+        assert_eq!(pieces[0].materials, mesh.materials);
+        assert_eq!(mesh.split(1).len(), 1);
+        assert_eq!(mesh.split(50).len(), 10);
     }
 
     #[test]

@@ -4,14 +4,19 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use bmod_core::compiler::{Runner, Studiomdl};
-use bmod_core::{AlphaMode, Blank, Bodygroup, CollisionMode, ConvertOptions, MaterialOptions, Scroll, TextureQuality, ToolPaths};
+use bmod_core::compiler::{Detected, Runner, Studiomdl};
+use bmod_core::{
+    AlphaMode, Blank, Bodygroup, CollisionMode, ConvertOptions, MaterialOptions, Scroll, StudiomdlBuild, TextureQuality,
+    ToolPaths,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
 const LOG_EVENT: &str = "bmod-log";
 const SETTINGS_FILE: &str = "settings.json";
+/// Chunk counts offered in the settings.
+const CHUNK_CHOICES: [usize; 5] = [1, 4, 8, 16, 32];
 
 /// Global, persisted app settings. Empty strings mean "use the default".
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -25,6 +30,12 @@ struct Settings {
     fast_textures: bool,
     default_scale: f32,
     default_collision: String,
+    /// Skip the DirectX 8 mesh, which GMod doesn't use (studiomdl `-fastbuild`).
+    fast_compile: bool,
+    /// "64" or "32": the studiomdl build used when it is found automatically.
+    studiomdl_build: String,
+    /// Pieces to split the model into for compiling; one of [`CHUNK_CHOICES`].
+    compile_chunks: usize,
     studiomdl_path: String,
     wine_path: String,
 }
@@ -39,6 +50,9 @@ impl Default for Settings {
             fast_textures: false,
             default_scale: bmod_core::convert::DEFAULT_SCALE,
             default_collision: "convex".into(),
+            fast_compile: true,
+            studiomdl_build: "64".into(),
+            compile_chunks: bmod_core::convert::DEFAULT_CHUNKS,
             studiomdl_path: String::new(),
             wine_path: String::new(),
         }
@@ -55,7 +69,8 @@ impl Settings {
 
     fn tools(&self) -> ToolPaths {
         let path = |s: &str| (!s.is_empty()).then(|| PathBuf::from(s));
-        ToolPaths { studiomdl: path(&self.studiomdl_path), wine: path(&self.wine_path) }
+        let build = if self.studiomdl_build == "32" { StudiomdlBuild::X86 } else { StudiomdlBuild::X64 };
+        ToolPaths { studiomdl: path(&self.studiomdl_path), wine: path(&self.wine_path), build }
     }
 
     /// Trims and checks user input, returning a message for the first problem.
@@ -75,6 +90,12 @@ impl Settings {
         }
         if !matches!(self.default_collision.as_str(), "convex" | "concave") {
             self.default_collision = "convex".into();
+        }
+        if !matches!(self.studiomdl_build.as_str(), "64" | "32") {
+            self.studiomdl_build = "64".into();
+        }
+        if !CHUNK_CHOICES.contains(&self.compile_chunks) {
+            self.compile_chunks = bmod_core::convert::DEFAULT_CHUNKS;
         }
         for (label, path) in [("studiomdl.exe", &self.studiomdl_path), ("Wine", &self.wine_path)] {
             if !path.is_empty() && !Path::new(path).is_file() {
@@ -111,6 +132,11 @@ fn load_settings(app: &AppHandle) -> Settings {
 #[serde(rename_all = "camelCase")]
 struct Environment {
     studiomdl: Option<String>,
+    /// Whether `studiomdl` is the 64-bit build.
+    studiomdl_64bit: bool,
+    /// Both builds as found in Garry's Mod, whichever is in use.
+    studiomdl64: Option<String>,
+    studiomdl32: Option<String>,
     wine: Option<String>,
     problem: Option<String>,
     output_root: String,
@@ -193,18 +219,23 @@ fn default_output_root() -> PathBuf {
 #[tauri::command]
 fn environment(state: State<AppState>) -> Environment {
     let settings = state.settings();
-    let (studiomdl, wine, problem) = match Studiomdl::locate_with(&settings.tools()) {
+    let (studiomdl, studiomdl_64bit, wine, problem) = match Studiomdl::locate_with(&settings.tools()) {
         Ok(s) => {
             let wine = match &s.runner {
                 Runner::Wine { wine, .. } => Some(wine.display().to_string()),
                 Runner::Native => None,
             };
-            (Some(s.exe.display().to_string()), wine, None)
+            (Some(s.exe.display().to_string()), s.is_64bit(), wine, None)
         }
-        Err(e) => (None, None, Some(format!("{e:#}"))),
+        Err(e) => (None, false, None, Some(format!("{e:#}"))),
     };
+    let detected = Detected::find();
+    let show = |p: Option<PathBuf>| p.map(|p| p.display().to_string());
     Environment {
         studiomdl,
+        studiomdl_64bit,
+        studiomdl64: show(detected.x64),
+        studiomdl32: show(detected.x86),
         wine,
         problem,
         output_root: settings.output_root().display().to_string(),
@@ -304,6 +335,8 @@ async fn convert(app: AppHandle, state: State<'_, AppState>, req: ConvertRequest
         tools: settings.tools(),
         texture_quality: if settings.fast_textures { TextureQuality::Fast } else { TextureQuality::High },
         texture_cache: bmod_core::texcache::default_dir(),
+        fast_compile: settings.fast_compile,
+        chunks: settings.compile_chunks,
     };
     tauri::async_runtime::spawn_blocking(move || {
         let log = |line: &str| {
@@ -408,10 +441,15 @@ mod tests {
             output_dir: "  ".into(),
             model_dir: " My Props! ".into(),
             default_collision: "bogus".into(),
+            studiomdl_build: "16".into(),
+            compile_chunks: 7,
             ..Default::default()
         }
         .normalized()
         .unwrap();
+        assert_eq!(s.studiomdl_build, "64");
+        assert_eq!(s.compile_chunks, 8);
+        assert_eq!(Settings { compile_chunks: 32, ..Default::default() }.normalized().unwrap().compile_chunks, 32);
         assert_eq!(s.output_dir, "");
         assert_eq!(s.model_dir, "my_props");
         assert_eq!(s.default_collision, "convex");
@@ -432,5 +470,8 @@ mod tests {
         assert_eq!(s.output_dir, "/x");
         assert!(s.keep_sources);
         assert_eq!(s.model_dir, "bmod");
+        assert!(s.fast_compile, "fast compile is on for existing settings files too");
+        assert_eq!(s.studiomdl_build, "64");
+        assert_eq!(s.compile_chunks, 8);
     }
 }

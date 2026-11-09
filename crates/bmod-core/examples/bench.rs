@@ -90,9 +90,15 @@ fn main() -> anyhow::Result<()> {
             output_root: out.clone(),
             model_dir: String::new(),
             keep_sources: true,
-            tools: ToolPaths { studiomdl: Some(fixtures.join("cube.png")), wine: Some("/usr/bin/true".into()) },
+            tools: ToolPaths {
+                studiomdl: Some(fixtures.join("cube.png")),
+                wine: Some("/usr/bin/true".into()),
+                ..Default::default()
+            },
             texture_quality: TextureQuality::High,
             texture_cache: None,
+            fast_compile: true,
+            chunks: bmod_core::convert::DEFAULT_CHUNKS,
         };
         let run = |opts: &ConvertOptions| {
             let err = convert(opts, log).unwrap_err().to_string();

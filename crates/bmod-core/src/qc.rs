@@ -7,10 +7,13 @@ pub struct QcParams<'a> {
     pub model_path: &'a str,
     /// Directory relative to `materials/`, e.g. `models/bmod/crate/`.
     pub cdmaterials: &'a str,
-    /// Always-visible geometry; `None` when every part is in a bodygroup.
-    pub reference_smd: Option<&'a str>,
+    /// Always-visible geometry, split into chunks that each become a `$body`
+    /// (smaller meshes compile much faster); empty when every part is in a bodygroup.
+    pub reference_smds: &'a [&'a str],
     pub bodygroups: &'a [QcBodygroup<'a>],
     pub physics_smd: &'a str,
+    /// Skeleton-only SMD for the `$sequence` (see [`crate::smd::idle`]).
+    pub sequence_smd: &'a str,
     pub surfaceprop: &'a str,
     /// Number of convex pieces in a concave collision model; `None` for a single hull.
     pub concave_pieces: Option<usize>,
@@ -25,7 +28,10 @@ pub struct QcBodygroup<'a> {
 
 pub fn generate(p: &QcParams) -> String {
     let mut bodies = String::new();
-    if let Some(reference) = p.reference_smd {
+    // The first chunk comes before the bodygroups and the rest after them, so
+    // bodygroup indices (for `Entity:SetBodygroup`) don't depend on the chunk count.
+    let (first, rest) = p.reference_smds.split_first().map_or((None, &[][..]), |(f, r)| (Some(f), r));
+    if let Some(reference) = first {
         let _ = writeln!(bodies, "$body \"body\" \"{reference}\"");
     }
     for group in p.bodygroups {
@@ -40,11 +46,11 @@ pub fn generate(p: &QcParams) -> String {
         }
         bodies.push_str("}\n");
     }
-    // $sequence only needs the skeleton, which every SMD shares.
-    let sequence = p
-        .reference_smd
-        .or_else(|| p.bodygroups.iter().flat_map(|g| g.options.iter().flatten().copied()).next())
-        .unwrap_or(p.physics_smd);
+    // Single-option body parts don't show in GMod's bodygroup menu. The dot
+    // keeps the names apart from bodygroup names, which are sanitized to [a-z0-9_].
+    for (i, reference) in rest.iter().enumerate() {
+        let _ = writeln!(bodies, "$body \"body.{}\" \"{reference}\"", i + 2);
+    }
     // Without $concave, studiomdl wraps the whole physics mesh in one hull.
     let concave = match p.concave_pieces {
         Some(n) => format!("\t$concave\n\t$maxconvexpieces {n}\n"),
@@ -65,6 +71,7 @@ pub fn generate(p: &QcParams) -> String {
          }}\n",
         model = p.model_path,
         physics = p.physics_smd,
+        sequence = p.sequence_smd,
         cdmaterials = p.cdmaterials,
         surfaceprop = p.surfaceprop,
     )
@@ -78,9 +85,10 @@ mod tests {
         QcParams {
             model_path: "bmod/cup.mdl",
             cdmaterials: "models/bmod/cup/",
-            reference_smd: Some("cup_ref.smd"),
+            reference_smds: &["cup_ref.smd"],
             bodygroups,
             physics_smd: "cup_phys.smd",
+            sequence_smd: "cup_idle.smd",
             surfaceprop: "default",
             concave_pieces,
         }
@@ -111,14 +119,27 @@ mod tests {
              $bodygroup \"handle\"\n{\n\tblank\n\tstudio \"cup_part_a.smd\"\n\tstudio \"cup_part_b.smd\"\n}\n\
              $cdmaterials"
         ));
-        assert!(qc.contains("$sequence \"idle\" \"cup_ref.smd\""));
+        assert!(qc.contains("$sequence \"idle\" \"cup_idle.smd\""));
     }
 
     #[test]
     fn bodygroups_without_base_body() {
         let groups = [QcBodygroup { name: "lid", options: vec![None, Some("cup_part_lid.smd")] }];
-        let qc = generate(&QcParams { reference_smd: None, ..params(None, &groups) });
+        let qc = generate(&QcParams { reference_smds: &[], ..params(None, &groups) });
         assert!(!qc.contains("$body "));
-        assert!(qc.contains("$sequence \"idle\" \"cup_part_lid.smd\""));
+        assert!(qc.contains("$sequence \"idle\" \"cup_idle.smd\""));
+    }
+
+    #[test]
+    fn chunks_after_bodygroups() {
+        let groups = [QcBodygroup { name: "lid", options: vec![Some("cup_part_lid.smd"), None] }];
+        let qc = generate(&QcParams { reference_smds: &["cup_ref1.smd", "cup_ref2.smd", "cup_ref3.smd"], ..params(None, &groups) });
+        assert!(qc.contains(
+            "$body \"body\" \"cup_ref1.smd\"\n\
+             $bodygroup \"lid\"\n{\n\tstudio \"cup_part_lid.smd\"\n\tblank\n}\n\
+             $body \"body.2\" \"cup_ref2.smd\"\n\
+             $body \"body.3\" \"cup_ref3.smd\"\n\
+             $cdmaterials"
+        ));
     }
 }
