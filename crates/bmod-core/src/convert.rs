@@ -6,7 +6,8 @@
 //! models/<dir>/<name>.mdl (+ .vvd, .phy, .dx80.vtx, .dx90.vtx)
 //! materials/models/<dir>/<name>/<slot>.vmt   (one per material slot)
 //! materials/models/<dir>/<name>/<slot>.vtf   (one per distinct texture file)
-//! src/<name>.qc, <name>_ref.smd, <name>_phys.smd   (unless `keep_sources` is off)
+//! src/<name>.qc, <name>_phys.smd, <name>_idle.smd (unless `keep_sources` is off)
+//! src/<name>_ref.smd                               (or <name>_ref1.smd, … when split into chunks)
 //! src/<name>_part_<part>.smd                       (one per part in a bodygroup)
 //! ```
 //! The folder can be dropped straight into `garrysmod/addons/`.
@@ -28,8 +29,18 @@ use crate::{Logger, collision, import, qc, sanitize_name, smd, texcache, vmt, vt
 const HIGH_POLY_WARNING: usize = 10_000;
 /// studiomdl's limit on materials per model.
 const MAX_MATERIALS: usize = 32;
-/// studiomdl's limit on body parts (MAXSTUDIOBODYPARTS), one of which is the base `$body`.
-const MAX_BODYGROUPS: usize = 31;
+/// studiomdl's limit on body parts (MAXSTUDIOBODYPARTS): bodygroups plus base chunks.
+const MAX_BODYPARTS: usize = 32;
+/// Bodygroups allowed, leaving one body part for the base `$body`.
+const MAX_BODYGROUPS: usize = MAX_BODYPARTS - 1;
+/// Most chunks the always-visible geometry can be split into.
+pub const MAX_CHUNKS: usize = MAX_BODYPARTS;
+/// Chunks used when none are chosen.
+pub const DEFAULT_CHUNKS: usize = 8;
+/// Smallest chunk worth splitting off. studiomdl's cost grows much faster than
+/// linearly with a mesh's size, but below this it is negligible, and every
+/// chunk costs a draw call in-game.
+const MIN_CHUNK_TRIANGLES: usize = 2_000;
 /// Textures encoded at once. Each one in flight holds its decoded image and
 /// mips (about 90 MB at 4096x4096), and each encode is already multithreaded.
 const MAX_PARALLEL_TEXTURES: usize = 4;
@@ -128,6 +139,13 @@ pub struct ConvertOptions {
     /// Folder for reusing encoded textures across conversions (see [`texcache`]);
     /// `None` encodes every texture afresh.
     pub texture_cache: Option<PathBuf>,
+    /// Skip the DirectX 8 mesh, which Garry's Mod doesn't use (studiomdl's `-fastbuild`).
+    pub fast_compile: bool,
+    /// Split the always-visible geometry into up to this many body parts
+    /// (1 to [`MAX_CHUNKS`]). studiomdl's slowest steps grow much faster than
+    /// linearly with mesh size, so several small meshes compile far quicker
+    /// than one big one. Small models and bodygroups reduce the actual count.
+    pub chunks: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -254,6 +272,9 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
     if !(opts.scale.is_finite() && opts.scale > 0.0) {
         bail!("scale must be a positive number");
     }
+    if !(1..=MAX_CHUNKS).contains(&opts.chunks) {
+        bail!("chunks must be between 1 and {MAX_CHUNKS}");
+    }
     let model_dir = match sanitize_name(&opts.model_dir) {
         d if d.is_empty() => DEFAULT_MODEL_DIR.to_string(),
         d => d,
@@ -272,7 +293,11 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
 
     // Fail fast on a missing toolchain before doing any work.
     let studiomdl = Studiomdl::locate_with(&opts.tools)?;
-    log(&format!("using studiomdl: {}", studiomdl.exe.display()));
+    log(&format!(
+        "using studiomdl ({}): {}",
+        if studiomdl.is_64bit() { "64-bit" } else { "32-bit" },
+        studiomdl.exe.display()
+    ));
 
     // --- Model ---
     log(&format!("loading model {}", opts.model.display()));
@@ -340,22 +365,38 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
     // --- Materials, geometry and collision ---
     // These don't depend on each other (only studiomdl needs them all), so the
     // textures and the collision model are built while the SMDs are written.
-    let ref_smd = format!("{name}_ref.smd");
     let phys_smd = format!("{name}_phys.smd");
+    let idle_smd = format!("{name}_idle.smd");
     let part_smd = |p: u32| format!("{name}_part_{}.smd", mesh.parts[p as usize]);
-    let (reference_smd, concave_pieces) = std::thread::scope(|s| -> Result<_> {
+    let (reference_smds, concave_pieces) = std::thread::scope(|s| -> Result<_> {
         let materials = s.spawn(|| write_materials(&mesh.materials, &slot_opts, &mat_dir, &mat_rel, &texture_settings, log));
         let collision = s.spawn(|| write_collision(&mesh, &bodies, opts.collision, &src_dir.join(&phys_smd), log));
 
-        let reference_smd = if bodies.groups.is_empty() {
-            fs::write(src_dir.join(&ref_smd), smd::reference(&mesh))?;
-            Some(ref_smd.as_str())
+        fs::write(src_dir.join(&idle_smd), smd::idle())?;
+        let subset;
+        let base = if bodies.groups.is_empty() {
+            Some(&mesh)
         } else if !bodies.base.is_empty() {
-            fs::write(src_dir.join(&ref_smd), smd::reference(&mesh.subset(&bodies.base)))?;
-            Some(ref_smd.as_str())
+            subset = mesh.subset(&bodies.base);
+            Some(&subset)
         } else {
             None
         };
+        let mut reference_smds = Vec::new();
+        if let Some(base) = base {
+            let chunks = chunk_count(base.triangles.len(), opts.chunks, bodies.groups.len());
+            if chunks > 1 {
+                log(&format!(
+                    "compiling in {chunks} chunks of about {} triangles",
+                    base.triangles.len().div_ceil(chunks)
+                ));
+            }
+            for (i, chunk) in base.split(chunks).iter().enumerate() {
+                let file = if chunks == 1 { format!("{name}_ref.smd") } else { format!("{name}_ref{}.smd", i + 1) };
+                fs::write(src_dir.join(&file), smd::reference(chunk))?;
+                reference_smds.push(file);
+            }
+        }
         for (group, options) in &bodies.groups {
             let labels: Vec<&str> = options
                 .iter()
@@ -368,8 +409,9 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
         }
 
         join(materials)?;
-        Ok((reference_smd, join(collision)?))
+        Ok((reference_smds, join(collision)?))
     })?;
+    let reference_smds: Vec<&str> = reference_smds.iter().map(String::as_str).collect();
     let part_smds: Vec<Vec<Option<String>>> =
         bodies.groups.iter().map(|(_, options)| options.iter().map(|o| o.map(part_smd)).collect()).collect();
     let qc_bodygroups: Vec<qc::QcBodygroup> = bodies
@@ -386,9 +428,10 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
         qc::generate(&qc::QcParams {
             model_path: &model_path,
             cdmaterials: &format!("{mat_rel}/"),
-            reference_smd,
+            reference_smds: &reference_smds,
             bodygroups: &qc_bodygroups,
             physics_smd: &phys_smd,
+            sequence_smd: &idle_smd,
             surfaceprop: &surfaceprop,
             concave_pieces,
         }),
@@ -399,7 +442,10 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
     // so studiomdl writes models/ here instead of into the GMod install.
     let gameinfo = dir.join("gameinfo.txt");
     fs::write(&gameinfo, GAMEINFO)?;
-    let result = studiomdl.compile(&dir, &qc_path, log);
+    if opts.fast_compile {
+        log("fast compile: skipping the DirectX 8 mesh");
+    }
+    let result = studiomdl.compile(&dir, &qc_path, opts.fast_compile, log);
     let _ = fs::remove_file(&gameinfo);
     result?;
 
@@ -412,6 +458,16 @@ pub fn convert(opts: &ConvertOptions, log: Logger) -> Result<ConvertOutput> {
     }
     log(&format!("done: models/{model_path}"));
     Ok(ConvertOutput { dir, mdl, model_path: format!("models/{model_path}") })
+}
+
+/// How many chunks to split `triangles` of always-visible geometry into: at most
+/// `requested`, at most what the body-part limit leaves after `bodygroups`, and
+/// no chunk smaller than [`MIN_CHUNK_TRIANGLES`].
+fn chunk_count(triangles: usize, requested: usize, bodygroups: usize) -> usize {
+    requested
+        .min(MAX_BODYPARTS.saturating_sub(bodygroups))
+        .min(triangles / MIN_CHUNK_TRIANGLES)
+        .max(1)
 }
 
 /// Waits for a scoped thread, re-raising its panic if it had one.
@@ -629,6 +685,17 @@ mod tests {
             }
         );
         assert_eq!(layout.default_visible(), [0, 1]);
+    }
+
+    #[test]
+    fn chunk_counts() {
+        assert_eq!(chunk_count(100_000, 8, 0), 8);
+        assert_eq!(chunk_count(100_000, 32, 0), 32);
+        assert_eq!(chunk_count(100_000, 32, 30), 2, "bodygroups use up body parts");
+        assert_eq!(chunk_count(100_000, 32, 31), 1);
+        assert_eq!(chunk_count(10_000, 8, 0), 5, "chunks stay above the minimum size");
+        assert_eq!(chunk_count(1_500, 8, 0), 1);
+        assert_eq!(chunk_count(100_000, 1, 0), 1);
     }
 
     #[test]

@@ -14,7 +14,7 @@ pub mod texcache;
 pub mod vmt;
 pub mod vtf;
 
-pub use compiler::ToolPaths;
+pub use compiler::{Build as StudiomdlBuild, ToolPaths};
 pub use vtf::TextureQuality;
 pub use convert::{
     AlphaMode, Blank, Bodygroup, CollisionMode, ConvertOptions, ConvertOutput, MaterialOptions, ModelInfo, ModelPart, Scroll,

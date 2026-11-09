@@ -6,6 +6,10 @@
 //! Overrides, in order of precedence: explicit [`ToolPaths`] (the app's
 //! settings), then `BMOD_STUDIOMDL` (path to studiomdl.exe) and `BMOD_WINE`
 //! (wine binary), then auto-detection.
+//!
+//! Garry's Mod ships two builds: `bin/studiomdl.exe` (32-bit) and
+//! `bin/win64/studiomdl.exe` (64-bit, noticeably faster). Detection finds both
+//! and uses the one [`ToolPaths::build`] asks for, or the other if it is missing.
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -23,11 +27,48 @@ pub enum Runner {
     Wine { wine: PathBuf, prefix: PathBuf },
 }
 
+/// One of the two studiomdl builds that ship with Garry's Mod.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Build {
+    #[default]
+    X64,
+    X86,
+}
+
 /// User-chosen tool locations; `None` means "auto-detect".
 #[derive(Clone, Debug, Default)]
 pub struct ToolPaths {
     pub studiomdl: Option<PathBuf>,
     pub wine: Option<PathBuf>,
+    /// Build preferred when studiomdl is found automatically; ignored for an explicit path.
+    pub build: Build,
+}
+
+/// Where Garry's Mod keeps studiomdl, relative to a Steam library folder.
+const GMOD_BIN: &str = "steamapps/common/GarrysMod/bin";
+
+/// The studiomdl builds found in the Steam libraries.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Detected {
+    pub x64: Option<PathBuf>,
+    pub x86: Option<PathBuf>,
+}
+
+impl Detected {
+    /// Looks for both builds in every Steam library.
+    pub fn find() -> Self {
+        let bins: Vec<PathBuf> = steam_libraries().into_iter().map(|lib| lib.join(GMOD_BIN)).collect();
+        let first = |rel: &str| bins.iter().map(|bin| bin.join(rel)).find(|p| p.is_file());
+        Self { x64: first("win64/studiomdl.exe"), x86: first("studiomdl.exe") }
+    }
+
+    /// The preferred build, or the other one if it wasn't found.
+    pub fn pick(self, build: Build) -> Option<PathBuf> {
+        match build {
+            Build::X64 => self.x64.or(self.x86),
+            Build::X86 => self.x86.or(self.x64),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -47,7 +88,7 @@ impl Studiomdl {
         let exe = match &paths.studiomdl {
             Some(p) if p.is_file() => p.clone(),
             Some(p) => bail!("studiomdl.exe not found at {} (check BMod's settings)", p.display()),
-            None => find_studiomdl().context(
+            None => find_studiomdl(paths.build).context(
                 "could not find studiomdl.exe. Install Garry's Mod through Steam (on Linux, force the \
                  Windows build with Properties > Compatibility > Proton), or set its path in BMod's settings",
             )?,
@@ -71,9 +112,21 @@ impl Studiomdl {
         Ok(Self { exe, runner })
     }
 
+    /// Whether this is the 64-bit build, which Garry's Mod keeps in `bin/win64/`.
+    pub fn is_64bit(&self) -> bool {
+        self.exe
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|dir| dir.eq_ignore_ascii_case("win64"))
+    }
+
     /// Compiles `qc` with `game_dir` as the mod directory (it must contain a gameinfo.txt).
     /// Output lands in `game_dir/models/...`.
-    pub fn compile(&self, game_dir: &Path, qc: &Path, log: Logger) -> Result<()> {
+    ///
+    /// `fast_build` passes `-fastbuild`, which skips the DirectX 8 mesh
+    /// (`.dx80.vtx`). Garry's Mod only uses the DirectX 9 one, and the other
+    /// output files come out byte-identical, so this roughly halves the time.
+    pub fn compile(&self, game_dir: &Path, qc: &Path, fast_build: bool, log: Logger) -> Result<()> {
         let mut cmd = match &self.runner {
             Runner::Native => Command::new(&self.exe),
             Runner::Wine { wine, prefix } => {
@@ -88,9 +141,11 @@ impl Studiomdl {
                 c
             }
         };
-        cmd.args(["-nop4", "-game"])
-            .arg(self.host_path(game_dir))
-            .arg(self.host_path(qc))
+        cmd.args(["-nop4", "-game"]).arg(self.host_path(game_dir));
+        if fast_build {
+            cmd.arg("-fastbuild");
+        }
+        cmd.arg(self.host_path(qc))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -199,14 +254,11 @@ fn find_in_path(bin: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-fn find_studiomdl() -> Option<PathBuf> {
+fn find_studiomdl(build: Build) -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("BMOD_STUDIOMDL") {
         return Some(PathBuf::from(p)).filter(|p| p.is_file());
     }
-    steam_libraries()
-        .into_iter()
-        .map(|lib| lib.join("steamapps/common/GarrysMod/bin/studiomdl.exe"))
-        .find(|p| p.is_file())
+    Detected::find().pick(build)
 }
 
 /// Steam library folders from every known Steam root's `libraryfolders.vdf`.
@@ -263,6 +315,23 @@ mod tests {
             parse_library_paths(vdf),
             vec![PathBuf::from("/home/u/.local/share/Steam"), PathBuf::from(r"D:\SteamLibrary")]
         );
+    }
+
+    #[test]
+    fn picks_preferred_build_or_the_other() {
+        let both = Detected { x64: Some("64".into()), x86: Some("32".into()) };
+        assert_eq!(both.clone().pick(Build::X64), Some("64".into()));
+        assert_eq!(both.pick(Build::X86), Some("32".into()));
+        let only32 = Detected { x64: None, x86: Some("32".into()) };
+        assert_eq!(only32.pick(Build::X64), Some("32".into()));
+        assert_eq!(Detected::default().pick(Build::X86), None);
+    }
+
+    #[test]
+    fn recognizes_64bit_build() {
+        let s = |exe: &str| Studiomdl { exe: exe.into(), runner: Runner::Native };
+        assert!(s("/gmod/bin/win64/studiomdl.exe").is_64bit());
+        assert!(!s("/gmod/bin/studiomdl.exe").is_64bit());
     }
 
     #[test]

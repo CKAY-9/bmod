@@ -5,6 +5,8 @@ use std::fmt::Write as _;
 use crate::collision::Triangle;
 use crate::mesh::Mesh;
 
+/// The single `root` bone at rest.
+const SKELETON: &str = "version 1\nnodes\n0 \"root\" -1\nend\nskeleton\ntime 0\n0 0 0 0 0 0 0\nend\n";
 const HEADER: &str = "version 1\nnodes\n0 \"root\" -1\nend\nskeleton\ntime 0\n0 0 0 0 0 0 0\nend\ntriangles\n";
 
 /// Appends `v` as `{:.6}` would, except that zero is never written as "-0.000000".
@@ -35,6 +37,13 @@ fn push_vertex(out: &mut String, pos: [f32; 3], normal: [f32; 3], uv: [f32; 2]) 
         push_f(out, c);
     }
     out.push('\n');
+}
+
+/// Skeleton-only SMD for the `$sequence`. studiomdl parses (and welds) every
+/// triangle of a sequence SMD even though it only needs the skeleton, so
+/// pointing the sequence at the reference mesh would load it a second time.
+pub fn idle() -> &'static str {
+    SKELETON
 }
 
 /// Reference (visible) mesh; each triangle names its own material slot.
@@ -141,6 +150,11 @@ mod tests {
             assert_eq!(*normal, v[4..7].join(" "), "corner {:?} has differing normals", &v[1..4]);
         }
         assert_eq!(seen.len(), 8);
+    }
+
+    #[test]
+    fn idle_is_the_header_without_triangles() {
+        assert_eq!(format!("{}triangles\n", idle()), HEADER);
     }
 
     #[test]

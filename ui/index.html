@@ -147,6 +147,40 @@
       </fieldset>
 
       <fieldset>
+        <legend>Compiling</legend>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="set-fast-compile"><span>Fast compile</span></label>
+          <small class="muted setting-note">Skips the DirectX 8 mesh file (<code>.dx80.vtx</code>), which Garry's Mod doesn't use. Compiles about twice as fast with the same result in-game.</small>
+        </div>
+        <div class="settings-grid">
+          <label class="field">
+            <span>studiomdl build</span>
+            <select id="set-studiomdl-build">
+              <option value="64">64-bit</option>
+              <option value="32">32-bit</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Chunks</span>
+            <select id="set-compile-chunks">
+              <option value="1">1 (don't split)</option>
+              <option value="4">4</option>
+              <option value="8">8</option>
+              <option value="16">16</option>
+              <option value="32">32</option>
+            </select>
+          </label>
+        </div>
+        <small class="muted setting-note" id="set-build-status"></small>
+        <small class="muted setting-note">
+          <strong>Build:</strong> the 64-bit studiomdl is faster and is used whenever it's found. Pick 32-bit if it fails to run.<br>
+          <strong>Chunks:</strong> splits the model into up to this many pieces before compiling. studiomdl slows down sharply on big meshes,
+          so a 100,000-triangle model compiles several times faster in 8 or 16 pieces. Small models aren't split (each piece keeps at least
+          2,000 triangles), and each extra piece adds a draw call in-game.
+        </small>
+      </fieldset>
+
+      <fieldset>
         <legend>Tools</legend>
         <div class="field">
           <span>studiomdl.exe</span>

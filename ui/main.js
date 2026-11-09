@@ -354,7 +354,8 @@ async function loadEnvironment() {
     showResult(false, "Setup needed", `${env.problem}\n\nYou can set the path under Settings (gear icon).`);
   } else {
     pill.classList.add("ok");
-    pill.textContent = env.wine ? "studiomdl ready (Wine)" : "studiomdl ready";
+    const details = [env.studiomdl64bit ? "64-bit" : "32-bit", env.wine && "Wine"].filter(Boolean).join(", ");
+    pill.textContent = `studiomdl ready (${details})`;
     pill.title = env.studiomdl;
     if (state.setupShown) {
       $("result").hidden = true;
@@ -379,6 +380,9 @@ function defaultSettings() {
     fastTextures: false,
     defaultScale: state.env?.defaultScale ?? 39.37,
     defaultCollision: "convex",
+    fastCompile: true,
+    studiomdlBuild: "64",
+    compileChunks: 8,
     studiomdlPath: "",
     winePath: "",
   };
@@ -392,9 +396,34 @@ function fillSettingsForm(s) {
   $("set-fast-textures").checked = s.fastTextures;
   $("set-default-scale").value = s.defaultScale;
   $("set-default-collision").value = s.defaultCollision;
+  $("set-fast-compile").checked = s.fastCompile;
+  $("set-studiomdl-build").value = s.studiomdlBuild;
+  $("set-compile-chunks").value = String(s.compileChunks);
   $("set-studiomdl").value = s.studiomdlPath;
   $("set-wine").value = s.winePath;
   updateModelPreview();
+  updateBuildStatus();
+}
+
+/** Says which studiomdl builds were found, and marks missing ones in the build list. */
+function updateBuildStatus() {
+  const env = state.env;
+  if (!env) return;
+  const found = { 64: env.studiomdl64, 32: env.studiomdl32 };
+  for (const option of $("set-studiomdl-build").options) {
+    option.textContent = `${option.value}-bit${found[option.value] ? "" : " (not found)"}`;
+  }
+  let text;
+  if ($("set-studiomdl").value.trim()) {
+    text = "The build choice is ignored while a studiomdl.exe path is set under Tools.";
+  } else if (found[64] && found[32]) {
+    text = "Both builds were found in Garry's Mod.";
+  } else if (found[64] || found[32]) {
+    text = `Only the ${found[64] ? 64 : 32}-bit build was found, so it is used either way.`;
+  } else {
+    text = "Neither build was found in Garry's Mod. Set a studiomdl.exe path under Tools.";
+  }
+  $("set-build-status").textContent = text;
 }
 
 function readSettingsForm() {
@@ -406,6 +435,9 @@ function readSettingsForm() {
     fastTextures: $("set-fast-textures").checked,
     defaultScale: parseFloat($("set-default-scale").value),
     defaultCollision: $("set-default-collision").value,
+    fastCompile: $("set-fast-compile").checked,
+    studiomdlBuild: $("set-studiomdl-build").value,
+    compileChunks: parseInt($("set-compile-chunks").value, 10),
     studiomdlPath: $("set-studiomdl").value,
     winePath: $("set-wine").value,
   };
@@ -499,7 +531,10 @@ async function browseSetting(button) {
     defaultPath: current,
     filters: kind === "exe" ? [{ name: "studiomdl.exe", extensions: ["exe"] }] : undefined,
   });
-  if (typeof path === "string") input.value = path;
+  if (typeof path === "string") {
+    input.value = path;
+    input.dispatchEvent(new Event("input"));
+  }
 }
 
 function initSettings() {
@@ -509,6 +544,7 @@ function initSettings() {
   $("settings-cancel").addEventListener("click", () => dialog.close());
   $("settings-reset").addEventListener("click", () => fillSettingsForm(defaultSettings()));
   $("set-model-dir").addEventListener("input", updateModelPreview);
+  $("set-studiomdl").addEventListener("input", updateBuildStatus);
   $("cache-clear").addEventListener("click", clearCache);
   $("cache-open").addEventListener("click", () =>
     invoke("open_texture_cache").catch((err) => ($("cache-usage").textContent = String(err))),

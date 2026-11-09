@@ -13,7 +13,7 @@ Blender-to-Garry's Mod, or BMod, is a simple GUI app for converting modern model
 ## Requirements
 
 - **Rust** (stable) and the [Tauri 2 system dependencies](https://v2.tauri.app/start/prerequisites/). On Linux these are `webkit2gtk-4.1` and `gtk3`.
-- **Garry's Mod (Windows build)** installed through Steam. BMod uses its `bin/studiomdl.exe`. On Linux, force the Windows build with *Properties → Compatibility → Proton*.
+- **Garry's Mod (Windows build)** installed through Steam. BMod uses its `bin/win64/studiomdl.exe`, or `bin/studiomdl.exe` (32-bit) if you pick it in Settings or the 64-bit one is missing. On Linux, force the Windows build with *Properties → Compatibility → Proton*.
 - **Wine** on Linux and macOS, for running studiomdl. BMod uses its own prefix in the app data dir, for example `~/.local/share/bmod/wineprefix`.
 
 BMod finds GMod through your Steam library folders. To override this, set the paths under **Settings** (the gear icon), or set:
@@ -37,6 +37,7 @@ cargo run -p bmod-cli -- cup.glb cup.png --concave   # collision that keeps the 
 cargo run -p bmod-cli -- printer.glb body.png --group screen=screen      # screen part can be switched off
 cargo run -p bmod-cli -- hat.glb hat.png --group hat=cap,tophat:hidden   # spawns bare; pick a cap or top hat
 cargo run -p bmod-cli -- model.glb texture.png --fast-textures  # quicker, slightly lower-quality textures
+cargo run -p bmod-cli -- model.glb texture.png --chunks 16      # split a big model further for a faster compile
 cargo run -p bmod-cli -- --help                      # all options (--out, --model-dir, --no-sources, --no-cache, …)
 ```
 
@@ -51,7 +52,7 @@ Bundling installers (AppImage/deb/MSI) needs the Tauri CLI: `cargo install tauri
 5. Set the name, scale, surface type and collision, then click **Convert**. A folder named `bmod_<name>_<timestamp>/` appears in the export folder (the working directory unless changed in Settings):
 
 ```text
-models/bmod/<name>.mdl  (.vvd .phy .dx80.vtx .dx90.vtx)
+models/bmod/<name>.mdl  (.vvd .phy .dx90.vtx, plus .dx80.vtx with fast compile off)
 materials/models/bmod/<name>/<slot>.vmt   one per material slot
 materials/models/bmod/<name>/<slot>.vtf   one per distinct texture file
 src/            generated .qc and .smd files, kept for reference
@@ -85,6 +86,10 @@ The gear icon opens global settings, saved in BMod's config directory (for examp
 - **Open the export folder after converting.**
 - **Fast texture compression:** encodes large textures roughly 10x faster at slightly lower quality (more visible blockiness on smooth gradients). Worth turning on while iterating; turn it off for the final export.
 - **Defaults** for scale and collision on new conversions.
+- **Compiling:** speed options for studiomdl, which is the slow step on big models.
+  - **Fast compile** (on by default) skips the DirectX 8 mesh (`.dx80.vtx`), which Garry's Mod doesn't use. It about halves compile time, and the other files come out identical.
+  - **studiomdl build** picks the 64-bit or 32-bit studiomdl from Garry's Mod. BMod detects both and uses 64-bit by default, since it is faster. If only one is installed, that one is used.
+  - **Chunks** (1, 4, 8, 16 or 32; default 8) splits the always-visible geometry into up to that many body parts. studiomdl slows down sharply as one mesh grows, so a 100,000-triangle model compiles in about 12 s with 8 chunks instead of about a minute with 1. Each chunk keeps at least 2,000 triangles, so small models aren't split, and bodygroups use up chunk slots (Source allows 32 body parts in total). Chunks have one option each, so they don't appear in GMod's bodygroup menu, and they come after your bodygroups so bodygroup numbers don't change. Each extra chunk adds a draw call in-game.
 - **Tools:** paths to `studiomdl.exe` and Wine when auto-detection fails.
 - **Texture cache:** shows where cached textures live and how much space they use, with buttons to open the folder or clear it (see below).
 
