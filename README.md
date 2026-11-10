@@ -12,7 +12,8 @@ Blender-to-Garry's Mod, or BMod, is a simple GUI app for converting modern model
 
 ## Requirements
 
-- **Rust** (stable) and the [Tauri 2 system dependencies](https://v2.tauri.app/start/prerequisites/). On Linux these are `webkit2gtk-4.1` and `gtk3`.
+To use BMod you need:
+
 - **Garry's Mod (Windows build)** installed through Steam. BMod uses its `bin/win64/studiomdl.exe`, or `bin/studiomdl.exe` (32-bit) if you pick it in Settings or the 64-bit one is missing. On Linux, force the Windows build with *Properties → Compatibility → Proton*.
 - **Wine** on Linux and macOS, for running studiomdl. BMod uses its own prefix in the app data dir, for example `~/.local/share/bmod/wineprefix`.
 
@@ -25,10 +26,89 @@ BMod finds GMod through your Steam library folders. To override this, set the pa
 
 Paths set in Settings take precedence over these variables.
 
-## Run
+## Building
+
+BMod is a Cargo workspace with three crates: `bmod-core` (the conversion pipeline), `bmod-cli` (headless front-end) and `bmod` in `src-tauri` (the GUI). The frontend in `ui/` is plain HTML/CSS/JS, so there is no npm or bundler step.
+
+### Prerequisites
+
+- **Rust** (stable), installed with [rustup](https://rustup.rs).
+- The [Tauri 2 system dependencies](https://v2.tauri.app/start/prerequisites/) for your OS. On Linux these are `webkit2gtk-4.1` and `gtk3`. On Windows, the WebView2 runtime is needed to run the GUI. Windows 10 and 11 already include it.
+- **Tauri CLI**, only for building installers: `cargo install tauri-cli --locked`.
+
+### Run from source
 
 ```sh
-cargo run -p bmod                                    # GUI
+cargo run -p bmod                       # GUI
+cargo run -p bmod-cli -- --help         # CLI (see Command line below)
+```
+
+### Release build
+
+Build on the OS you are targeting:
+
+```sh
+cargo build --release
+```
+
+| Output | Path |
+|---|---|
+| GUI | `target/release/bmod` (`bmod.exe` on Windows) |
+| CLI | `target/release/bmod-cli` (`bmod-cli.exe` on Windows) |
+
+To build only one of them, add `-p bmod` or `-p bmod-cli`.
+
+### Installers
+
+Installers (AppImage/deb/rpm on Linux, NSIS/MSI on Windows, dmg on macOS) need the Tauri CLI. Run this from the repo root:
+
+```sh
+cargo tauri build
+```
+
+Installers are written to `target/release/bundle/<format>/`. To build a single format, add `--bundles`, for example `--bundles nsis`.
+
+### Cross-compiling for Windows from Linux
+
+[`cargo-xwin`](https://github.com/rust-cross/cargo-xwin) downloads the MSVC CRT and Windows SDK and cross-compiles with clang and lld. Wine isn't needed to build.
+
+1. **One-time setup**
+
+   ```sh
+   rustup target add x86_64-pc-windows-msvc
+   cargo install cargo-xwin --locked
+   sudo pacman -S clang lld llvm          # Arch. On other distros, install clang, lld and llvm
+   ```
+
+   The first build downloads about 1 GB of SDK files into `~/.cache/cargo-xwin`.
+
+2. **Build the executables (GUI and CLI)**
+
+   ```sh
+   cargo xwin build --release --target x86_64-pc-windows-msvc
+   ```
+
+   The output is in `target/x86_64-pc-windows-msvc/release/`: `bmod.exe` (GUI) and `bmod-cli.exe` (CLI). Add `-p bmod` or `-p bmod-cli` to build only one.
+
+3. **Build the installer (optional)**
+
+   Cross-compiled installers use NSIS. MSI can't be built on Linux. You also need `makensis` (`sudo pacman -S nsis`) and the Tauri CLI (see Prerequisites).
+
+   ```sh
+   cargo tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
+   ```
+
+   The setup file is written to `target/x86_64-pc-windows-msvc/release/bundle/nsis/`. Without `--bundles nsis`, Tauri also tries to build Linux formats.
+
+Testing the result: the CLI usually runs under Wine, but the Tauri GUI doesn't run reliably there, so test the GUI on a real Windows machine or VM.
+
+### Versioning
+
+The version is set in `src-tauri/tauri.conf.json` and in each crate's `Cargo.toml`. It determines the installer's filename and the version the app reports. Update all of them before tagging a release.
+
+## Command line
+
+```sh
 cargo run -p bmod-cli -- model.glb --list            # show material slots
 cargo run -p bmod-cli -- model.glb texture.png       # one texture for every slot
 cargo run -p bmod-cli -- printer.glb --tex body=body.png --tex money=money.png \
@@ -41,7 +121,7 @@ cargo run -p bmod-cli -- model.glb texture.png --chunks 16      # split a big mo
 cargo run -p bmod-cli -- --help                      # all options (--out, --model-dir, --no-sources, --no-cache, …)
 ```
 
-Bundling installers (AppImage/deb/MSI) needs the Tauri CLI: `cargo install tauri-cli`, then `cargo tauri build`.
+With a release build, run the binary directly instead of `cargo run`, for example `bmod-cli model.glb texture.png`.
 
 ## Usage
 
